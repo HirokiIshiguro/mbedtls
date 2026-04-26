@@ -28,6 +28,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_PLATFORM_H
 #define MBEDTLS_PLATFORM_H
 #include "mbedtls/private_access.h"
@@ -63,7 +66,9 @@ extern "C" {
 #include <stdio.h>
 #include <stdlib.h>
 #if defined(MBEDTLS_HAVE_TIME)
+#if !defined(__CCRX__)
 #include <time.h>
+#endif /* __CCRX__ */
 #endif
 #if !defined(MBEDTLS_PLATFORM_STD_SNPRINTF)
 #if defined(MBEDTLS_PLATFORM_HAS_NON_CONFORMING_SNPRINTF)
@@ -98,7 +103,9 @@ extern "C" {
 #define MBEDTLS_PLATFORM_STD_EXIT      exit /**< The default \c exit function to use. */
 #endif
 #if !defined(MBEDTLS_PLATFORM_STD_TIME)
+#if !defined(__CCRX__)
 #define MBEDTLS_PLATFORM_STD_TIME       time    /**< The default \c time function to use. */
+#endif /* __CCRX__ */
 #endif
 #if !defined(MBEDTLS_PLATFORM_STD_EXIT_SUCCESS)
 #define MBEDTLS_PLATFORM_STD_EXIT_SUCCESS  EXIT_SUCCESS /**< The default exit value to use. */

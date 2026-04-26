@@ -25,6 +25,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_RSA_H
 #define MBEDTLS_RSA_H
 #include "mbedtls/private_access.h"
@@ -126,6 +129,12 @@ typedef struct mbedtls_rsa_context
     /* Invariant: the mutex is initialized iff ver != 0. */
     mbedtls_threading_mutex_t MBEDTLS_PRIVATE(mutex);    /*!<  Thread-safety mutex. */
 #endif
+#if defined(TSIP_TLS_API_ENABLE)
+    uint32_t pubkey_n_spos;
+    uint32_t pubkey_n_epos;
+    uint32_t pubkey_e_spos;
+    uint32_t pubkey_e_epos;
+#endif /* TSIP_TLS_API_ENABLE */
 }
 mbedtls_rsa_context;
 

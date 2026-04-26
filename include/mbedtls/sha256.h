@@ -22,6 +22,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_SHA256_H
 #define MBEDTLS_SHA256_H
 #include "mbedtls/private_access.h"
@@ -30,6 +33,11 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include <platform.h> /* include bsp's platform.h before r_tsip_rx_if.h */
+#include "r_tsip_rx_if.h"
+#endif /* TSIP_TLS_API_ENABLE */
 
 /** SHA-256 input data was malformed. */
 #define MBEDTLS_ERR_SHA256_BAD_INPUT_DATA                 -0x0074
@@ -56,6 +64,9 @@ typedef struct mbedtls_sha256_context
     unsigned char MBEDTLS_PRIVATE(buffer)[64];   /*!< The data block being processed. */
     int MBEDTLS_PRIVATE(is224);                  /*!< Determines which function to use:
                                      0: Use SHA-256, or 1: Use SHA-224. */
+#if defined(TSIP_TLS_API_ENABLE)
+    tsip_sha_md5_handle_t sha256_cal_handle;
+#endif /* TSIP_TLS_API_ENABLE */
 }
 mbedtls_sha256_context;
 

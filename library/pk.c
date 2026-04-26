@@ -17,15 +17,19 @@
  *  limitations under the License.
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_PK_C)
 #include "mbedtls/pk.h"
+#include "mbedtls/asn1write.h"
 #include "pk_wrap.h"
 #include "pkwrite.h"
 
 #include "mbedtls/platform_util.h"
 #include "mbedtls/error.h"
+#include "mbedtls/debug.h"
 
 #if defined(MBEDTLS_RSA_C)
 #include "mbedtls/rsa.h"
@@ -43,6 +47,19 @@
 
 #include <limits.h>
 #include <stdint.h>
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include "mbedtls/ssl.h"
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+
+tsip_rsa2048_private_key_index_t                rsa2048_private_key;
+tsip_rsa2048_public_key_index_t                 rsa2048_public_key;
+tsip_ecc_private_key_index_t                    eccp256_private_key;
+tsip_ecc_public_key_index_t                     eccp256_public_key;
+#endif /* TSIP_TLS_API_ENABLE */
 
 /* Parameter validation macros based on platform_util.h */
 #define PK_VALIDATE_RET( cond )    \
@@ -624,10 +641,174 @@ int mbedtls_pk_sign_restartable( mbedtls_pk_context *ctx,
     if( ctx->pk_info->sign_func == NULL )
         return( MBEDTLS_ERR_PK_TYPE_MISMATCH );
 
-    return( ctx->pk_info->sign_func( ctx->pk_ctx, md_alg,
-                                     hash, hash_len,
-                                     sig, sig_size, sig_len,
-                                     f_rng, p_rng ) );
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == g_tsip_endpointflg )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+    {
+        return( ctx->pk_info->sign_func( ctx->pk_ctx, md_alg,
+                                         hash, hash_len,
+                                         sig, sig_size, sig_len,
+                                         f_rng, p_rng ) );
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        // preventing Lenstra's attack
+        e_tsip_err_t tsip_ret;
+        int ret;
+        const unsigned int data_len = 32;
+
+        if( MBEDTLS_PK_RSA == ctx->pk_info->type )
+        {
+            tsip_rsa_byte_data_t    client_rsa_mes;
+            tsip_rsa_byte_data_t    client_rsa_sig;
+            client_rsa_mes.pdata = (uint8_t *)&hash[hash_len - data_len];
+            client_rsa_mes.data_length = data_len;
+            client_rsa_mes.data_type = 1;
+            client_rsa_sig.pdata = sig;
+            client_rsa_sig.data_length = 0;
+
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT ( 5, "R_TSIP_RsassaPkcs2048SignatureGenerate" );
+            tsip_ret = R_TSIP_RsassaPkcs2048SignatureGenerate(
+                            &client_rsa_mes,
+                            &client_rsa_sig,
+                            &rsa2048_private_key,
+                            R_TSIP_RSA_HASH_SHA256 );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_RsassaPkcs2048SignatureGenerate ret:%d\r\n", tsip_ret );
+                return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+            }
+
+            *sig_len = client_rsa_sig.data_length;
+
+            // SignatureVerification
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 5, "R_TSIP_RsassaPkcs2048SignatureVerification\r\n" );
+            tsip_ret = R_TSIP_RsassaPkcs2048SignatureVerification(
+                            &client_rsa_sig,
+                            &client_rsa_mes,
+                            &rsa2048_public_key,
+                            R_TSIP_RSA_HASH_SHA256 );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_RsassaPkcs2048SignatureVerification ret:%d\r\n", tsip_ret );
+                return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+            }
+        }
+        else if( MBEDTLS_PK_ECKEY == ctx->pk_info->type )
+        {
+            tsip_ecdsa_byte_data_t  client_ecc_mes;
+            tsip_ecdsa_byte_data_t  client_ecc_sig;
+            uint8_t                 ecdsa_sig[64];
+            uint8_t                 rp[32];
+            uint8_t                 sp[32];
+            mbedtls_mpi             r, s;
+            unsigned char           buf[MBEDTLS_ECDSA_MAX_LEN] = {0};
+            unsigned char           *p = buf + sizeof( buf );
+            size_t                  len = 0;
+
+            client_ecc_mes.pdata = (uint8_t *)&hash[hash_len - data_len];
+            client_ecc_mes.data_length = data_len;
+            client_ecc_mes.data_type = 1;
+            client_ecc_sig.pdata = &ecdsa_sig[0];
+            client_ecc_sig.data_length = 0;
+
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 5, "R_TSIP_EcdsaP256SignatureGenerate \r\n" );
+            tsip_ret = R_TSIP_EcdsaP256SignatureGenerate(
+                            &client_ecc_mes,
+                            &client_ecc_sig,
+                            &eccp256_private_key );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_EcdsaP256SignatureGenerate ret:%d\r\n", tsip_ret );
+                return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+            }
+            // SignatureVerification
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 5, "R_TSIP_EcdsaP256SignatureVerification \r\n" );
+            tsip_ret = R_TSIP_EcdsaP256SignatureVerification(
+                            &client_ecc_sig,
+                            &client_ecc_mes,
+                            &eccp256_public_key );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_EcdsaP256SignatureVerification ret:%d\r\n", tsip_ret );
+                return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+            }
+
+            // changed endian (little -> big)
+            for( int i=0; i<32; i++ )
+            {
+                rp[i] = ecdsa_sig[31-i];
+                sp[i] = ecdsa_sig[63-i];
+            }
+
+            mbedtls_mpi_init( &r );
+            mbedtls_mpi_init( &s );
+
+            r.p = (mbedtls_mpi_uint*)rp;
+            s.p = (mbedtls_mpi_uint*)sp;
+
+            r.n = 8;
+            s.n = 8;
+
+            /* ASN.1 DER encode */
+            if( ( ret = mbedtls_asn1_write_mpi( &p, buf, &s ) ) < 0 )
+                return ret;
+            len += ret;
+            if( ( ret = mbedtls_asn1_write_mpi( &p, buf, &r ) ) < 0 )
+                return ret;
+            len += ret;
+
+            if( ( ret = mbedtls_asn1_write_len( &p, buf, len ) ) < 0 )
+                return ret;
+            len += ret;
+            if( ( ret = mbedtls_asn1_write_tag( &p,  buf,
+                            MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE ) ) < 0 )
+                return ret;
+            len += ret;
+
+            if( len > sig_size )
+                return( MBEDTLS_ERR_ECP_BUFFER_TOO_SMALL );
+
+            memcpy( sig, p, len );
+            *sig_len = len;
+        }
+        return( tsip_ret );
+    }
+#endif /* TSIP_TLS_API_ENABLE */
+    return( -1 );
 }
 
 /*

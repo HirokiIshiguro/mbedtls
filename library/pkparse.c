@@ -17,6 +17,8 @@
  *  limitations under the License.
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_PK_PARSE_C)
@@ -55,6 +57,10 @@
 #define mbedtls_calloc    calloc
 #define mbedtls_free       free
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include "mbedtls/x509_crt.h"
+#endif /* TSIP_TLS_API_ENABLE */
 
 /* Parameter validation macros based on platform_util.h */
 #define PK_VALIDATE_RET( cond )    \
@@ -501,6 +507,13 @@ static int pk_get_ecpubkey( unsigned char **p, const unsigned char *end,
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
 
+#if defined(TSIP_TLS_API_ENABLE)
+    key->pubkey_n_spos = (uint32_t)*p;
+    key->pubkey_n_epos = (uint32_t)( (end - *p) / 2 ) + 1;
+    key->pubkey_e_spos = (uint32_t)*p + key->pubkey_n_epos;
+    key->pubkey_e_epos = (uint32_t)( (end - *p) / 2 );
+#endif /* TSIP_TLS_API_ENABLE */
+
     if( ( ret = mbedtls_ecp_point_read_binary( &key->grp, &key->Q,
                     (const unsigned char *) *p, end - *p ) ) == 0 )
     {
@@ -542,6 +555,11 @@ static int pk_get_rsapubkey( unsigned char **p,
     if( ( ret = mbedtls_asn1_get_tag( p, end, &len, MBEDTLS_ASN1_INTEGER ) ) != 0 )
         return( MBEDTLS_ERROR_ADD( MBEDTLS_ERR_PK_INVALID_PUBKEY, ret ) );
 
+#if defined(TSIP_TLS_API_ENABLE)
+    rsa->pubkey_n_spos = (uint32_t)*p;
+    rsa->pubkey_n_epos = (uint32_t)len;
+#endif /* TSIP_TLS_API_ENABLE */
+
     if( ( ret = mbedtls_rsa_import_raw( rsa, *p, len, NULL, 0, NULL, 0,
                                         NULL, 0, NULL, 0 ) ) != 0 )
         return( MBEDTLS_ERR_PK_INVALID_PUBKEY );
@@ -551,6 +569,11 @@ static int pk_get_rsapubkey( unsigned char **p,
     /* Import E */
     if( ( ret = mbedtls_asn1_get_tag( p, end, &len, MBEDTLS_ASN1_INTEGER ) ) != 0 )
         return( MBEDTLS_ERROR_ADD( MBEDTLS_ERR_PK_INVALID_PUBKEY, ret ) );
+
+#if defined(TSIP_TLS_API_ENABLE)
+    rsa->pubkey_e_spos = (uint32_t)*p;
+    rsa->pubkey_e_epos = (uint32_t)len;
+#endif /* TSIP_TLS_API_ENABLE */
 
     if( ( ret = mbedtls_rsa_import_raw( rsa, NULL, 0, NULL, 0, NULL, 0,
                                         NULL, 0, *p, len ) ) != 0 )

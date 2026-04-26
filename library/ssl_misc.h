@@ -19,6 +19,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_SSL_MISC_H
 #define MBEDTLS_SSL_MISC_H
 
@@ -53,6 +56,11 @@
 #endif
 
 #include "common.h"
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include <platform.h> /* include bsp's platform.h before r_tsip_rx_if.h */
+#include "r_tsip_rx_if.h"
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if ( defined(__ARMCC_VERSION) || defined(_MSC_VER) ) && \
     !defined(inline) && !defined(__cplusplus)
@@ -881,6 +889,10 @@ struct mbedtls_ssl_handshake_params
     const mbedtls_x509_crt *dn_hints;   /*!< acceptable client cert issuers */
 #endif
 #endif /* MBEDTLS_SSL_SERVER_NAME_INDICATION */
+
+#if defined(TSIP_TLS_API_ENABLE)
+    tsip_sha_md5_handle_t   tsip_handshake_sha;
+#endif /* TSIP_TLS_API_ENABLE */
 };
 
 typedef struct mbedtls_ssl_hs_buffer mbedtls_ssl_hs_buffer;
@@ -1568,7 +1580,7 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
                              int (*f_rng)(void *, unsigned char *, size_t),
                              void *p_rng );
 MBEDTLS_CHECK_RETURN_CRITICAL
-int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
+int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
                              mbedtls_ssl_transform *transform,
                              mbedtls_record *rec );
 

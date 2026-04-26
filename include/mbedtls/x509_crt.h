@@ -19,6 +19,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_X509_CRT_H
 #define MBEDTLS_X509_CRT_H
 #include "mbedtls/private_access.h"
@@ -37,6 +40,18 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+/* public key from Root CA certification */
+extern uint32_t tsip_rootca_ecdsa_pubkey[24];   // Public key extracted from root CA certificate (ECDSA)
+extern uint8_t  tsip_rootca_rsa_pubkey_scnt;    // Number of server public key extracted from root CA certificate (RSA)
+extern uint32_t tsip_rootca_rsa_pubkey[5][140]; // Server public key extracted from root CA certificate (RSA)
+
+/* public key from server certification */
+extern uint32_t temp_tsip_server_rsa_pubkey[140];  // Server public key extracted from server certificate bundle (RSA)
+extern uint32_t temp_tsip_server_ecdsa_pubkey[24]; // Server public key extracted from server certificate bundle (ECDSA)
+extern uint32_t tsip_server_pubkey_type;           // Server public key type extracted from server certificate
+#endif /* TSIP_TLS_API_ENABLE */
 
 /**
  * \name Structures and functions for parsing and writing X.509 certificates

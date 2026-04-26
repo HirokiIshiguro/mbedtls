@@ -17,6 +17,8 @@
  *  limitations under the License.
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_SSL_CLI_C) && defined(MBEDTLS_SSL_PROTO_TLS1_2)
@@ -52,6 +54,15 @@
 #if defined(MBEDTLS_SSL_SESSION_TICKETS)
 #include "mbedtls/platform_util.h"
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include <platform.h> /* include bsp's platform.h before r_tsip_rx_if.h */
+#include "r_tsip_rx_if.h"
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_KEY_EXCHANGE_SOME_PSK_ENABLED)
 int mbedtls_ssl_conf_has_static_psk( mbedtls_ssl_config const *conf )
@@ -1970,10 +1981,14 @@ static int ssl_write_encrypted_pms( mbedtls_ssl_context *ssl,
                                     size_t offset, size_t *olen,
                                     size_t pms_offset )
 {
-    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     size_t len_bytes = 2;
-    unsigned char *p = ssl->handshake->premaster + pms_offset;
     mbedtls_pk_context * peer_pk;
+    unsigned char *p = ssl->handshake->premaster + pms_offset;
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+#if defined(TSIP_TLS_API_ENABLE)
+    uint8_t e_pms[256];
+    e_tsip_err_t tsip_ret;
+#endif /* TSIP_TLS_API_ENABLE */
 
     if( offset + len_bytes > MBEDTLS_SSL_OUT_CONTENT_LEN )
     {
@@ -1988,6 +2003,37 @@ static int ssl_write_encrypted_pms( mbedtls_ssl_context *ssl,
      *      opaque random[46];
      *  } PreMasterSecret;
      */
+#if defined(TSIP_TLS_API_ENABLE)
+    if( ssl->disable_tsip_tls_accel == 0U )
+    {
+#if defined(MBEDTLS_THREADING_C)
+    if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+        return( ret );
+#endif /* MBEDTLS_THREADING_C */
+
+    APP_ALL_PRINT( 5, "R_TSIP_TlsGeneratePreMasterSecret called.\r\n" );
+    tsip_ret = R_TSIP_TlsGeneratePreMasterSecret( &ssl->tsip_premaster_secret[0] );
+#if defined(MBEDTLS_THREADING_C)
+    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+    if( TSIP_SUCCESS != tsip_ret )
+    {
+        APP_ALL_PRINT( 1, "R_TSIP_TlsGeneratePreMasterSecret ret:%d \r\n", tsip_ret );
+        return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+    }
+    }
+    else
+    {
+        mbedtls_ssl_write_version( p, ssl->conf->transport,
+                                   MBEDTLS_SSL_VERSION_TLS1_2 );
+
+        if( ( ret = ssl->conf->f_rng( ssl->conf->p_rng, p + 2, 46 ) ) != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "f_rng", ret );
+            return( ret );
+        }
+    }
+#else /* TSIP_TLS_API_ENABLE */
     mbedtls_ssl_write_version( p, ssl->conf->transport,
                                MBEDTLS_SSL_VERSION_TLS1_2 );
 
@@ -1996,7 +2042,7 @@ static int ssl_write_encrypted_pms( mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_RET( 1, "f_rng", ret );
         return( ret );
     }
-
+#endif /* TSIP_TLS_API_ENABLE */
     ssl->handshake->pmslen = 48;
 
 #if !defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
@@ -2019,7 +2065,45 @@ static int ssl_write_encrypted_pms( mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_MSG( 1, ( "certificate key type mismatch" ) );
         return( MBEDTLS_ERR_SSL_PK_TYPE_MISMATCH );
     }
+#if defined(TSIP_TLS_API_ENABLE)
+    if( ssl->disable_tsip_tls_accel == 0U )
+    {
+#if defined(MBEDTLS_THREADING_C)
+    if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+        return( ret );
+#endif /* MBEDTLS_THREADING_C */
+    APP_ALL_PRINT( 5, "R_TSIP_TlsEncryptPreMasterSecretWithRsa2048PublicKey called.\r\n" );
+    tsip_ret = R_TSIP_TlsEncryptPreMasterSecretWithRsa2048PublicKey(
+                    &ssl->tsip_server_rsa_pubkey[0],
+                    &ssl->tsip_premaster_secret[0],
+                    e_pms );
+#if defined(MBEDTLS_THREADING_C)
+    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+    if( tsip_ret != TSIP_SUCCESS )
+    {
+        APP_ALL_PRINT( 1, "R_TSIP_TlsEncryptPreMasterSecretWithRsa2048PublicKey ret:%d \r\n", tsip_ret );
+        return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+    }
+    // RSA 2048 bit
+    *olen = 0x100;
 
+    unsigned char *p_e_pms = ssl->out_msg;
+    memcpy( p_e_pms + offset + len_bytes, &e_pms, sizeof(e_pms) );
+    }
+    else
+    {
+        if( ( ret = mbedtls_pk_encrypt( peer_pk,
+                                p, ssl->handshake->pmslen,
+                                ssl->out_msg + offset + len_bytes, olen,
+                                MBEDTLS_SSL_OUT_CONTENT_LEN - offset - len_bytes,
+                                ssl->conf->f_rng, ssl->conf->p_rng ) ) != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_rsa_pkcs1_encrypt", ret );
+            return( ret );
+        }
+    }
+#else /* TSIP_TLS_API_ENABLE */
     if( ( ret = mbedtls_pk_encrypt( peer_pk,
                             p, ssl->handshake->pmslen,
                             ssl->out_msg + offset + len_bytes, olen,
@@ -2029,7 +2113,7 @@ static int ssl_write_encrypted_pms( mbedtls_ssl_context *ssl,
         MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_rsa_pkcs1_encrypt", ret );
         return( ret );
     }
-
+#endif /* TSIP_TLS_API_ENABLE */
     if( len_bytes == 2 )
     {
         MBEDTLS_PUT_UINT16_BE( *olen, ssl->out_msg, offset );
@@ -2204,6 +2288,20 @@ static int ssl_parse_server_key_exchange( mbedtls_ssl_context *ssl )
     const mbedtls_ssl_ciphersuite_t *ciphersuite_info =
         ssl->handshake->ciphersuite_info;
     unsigned char *p = NULL, *end = NULL;
+
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+    uint32_t public_key_type;
+    int r_pos, w_pos = 0;
+    int r_len, s_len, w_len = 0;
+    uint8_t dummy_sig_data[72] = {0};
+    uint8_t parse_sig_data[256] = {0};
+    uint8_t ephemeral_ecdh_pubkey[68] = {0};
+    uint8_t dummy_qx[32] = {0};
+    uint8_t dummy_qy[32] = {0};
+    uint32_t enc_rsa_ecdsa_public_key[140] = {0};
+    uint8_t ssl_handshake_randbytes[64] = {0};
+#endif /* TSIP_TLS_API_ENABLE */
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> parse server key exchange" ) );
 
@@ -2402,7 +2500,6 @@ start_processing:
         unsigned char *params = ssl->in_msg + mbedtls_ssl_hs_hdr_len( ssl );
         size_t params_len = p - params;
         void *rs_ctx = NULL;
-
         mbedtls_pk_context * peer_pk;
 
         /*
@@ -2509,6 +2606,7 @@ start_processing:
             rs_ctx = &ssl->handshake->ecrs_ctx.pk;
 #endif
 
+#if !defined(TSIP_TLS_API_ENABLE)
         if( ( ret = mbedtls_pk_verify_restartable( peer_pk,
                         md_alg, hash, hashlen, p, sig_len, rs_ctx ) ) != 0 )
         {
@@ -2526,6 +2624,144 @@ start_processing:
 #endif
             return( ret );
         }
+#else /* TSIP_TLS_API_ENABLE */
+        if( ssl->disable_tsip_tls_accel != 0U )
+        {
+            if( ( ret = mbedtls_pk_verify_restartable( peer_pk,
+                            md_alg, hash, hashlen, p, sig_len, rs_ctx ) ) != 0 )
+            {
+#if defined(MBEDTLS_SSL_ECP_RESTARTABLE_ENABLED)
+                if( ret != MBEDTLS_ERR_ECP_IN_PROGRESS )
+#endif
+                    mbedtls_ssl_send_alert_message(
+                        ssl,
+                        MBEDTLS_SSL_ALERT_LEVEL_FATAL,
+                        MBEDTLS_SSL_ALERT_MSG_DECRYPT_ERROR );
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_pk_verify", ret );
+#if defined(MBEDTLS_SSL_ECP_RESTARTABLE_ENABLED)
+                if( ret == MBEDTLS_ERR_ECP_IN_PROGRESS )
+                    ret = MBEDTLS_ERR_SSL_CRYPTO_IN_PROGRESS;
+#endif
+                return( ret );
+            }
+        }
+        else
+        {
+        // set random number of client and server
+        memcpy ( &ssl_handshake_randbytes[0],
+                 &ssl->handshake->randbytes[0],
+                 64 );
+
+        // generate ephemeral ECDH public key (uncompressed format)
+        // format : 0padding(24bit) || 04(8bit) || Qx(256bit) || Qy(256bit)
+        memcpy ( &dummy_qx[0],
+                 ssl->handshake->ecdh_ctx.ctx.mbed_ecdh.Qp.X.p,
+                 32 );
+        memcpy ( &dummy_qy[0],
+                 ssl->handshake->ecdh_ctx.ctx.mbed_ecdh.Qp.Y.p,
+                 32 );
+
+        ephemeral_ecdh_pubkey[3] = 0x04;
+
+        for( int i = 0; i < 32; i++ )
+        {
+            ephemeral_ecdh_pubkey[4+i] = dummy_qx[31-i];
+            ephemeral_ecdh_pubkey[36+i] = dummy_qy[31-i];
+        }
+
+        if( pk_alg == MBEDTLS_PK_RSA )
+        {
+            // RSA 2048bit
+            public_key_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048;
+
+            // set public key data
+            memcpy( &enc_rsa_ecdsa_public_key[0],
+                    &ssl->tsip_server_rsa_pubkey[0],
+                    560 );
+
+            // modify digital signature data
+            memcpy( &parse_sig_data[0], p, 256 );
+        }
+        else if( pk_alg == MBEDTLS_PK_ECDSA )
+        {
+            // ECDSA P-256bit
+            public_key_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_ECDSA_P256;
+
+            // set public key data
+            memcpy( &enc_rsa_ecdsa_public_key[0],
+                    &ssl->tsip_server_ecdsa_pubkey[0],
+                    96 );
+
+            // modify digital signature data
+            memset( parse_sig_data, 0x00, 64 );
+            memcpy( dummy_sig_data, p, 72 );
+
+            /* copy r of ECDSA signature data */
+            r_pos = 3;
+            w_pos = 0;
+            r_len = dummy_sig_data[r_pos++];
+            w_len = r_len;
+            /* in the case that r length is 33 byte including padding byte */
+            if( r_len == 33 )
+            {
+                r_pos++; // skip padding byte
+                w_len--; // copy size is 32 bytes
+            }
+            /* length of r is less than 32 bytes */
+            else if( r_len <= 31 )
+            {
+                w_pos += (32 - r_len);
+            }
+            memcpy( &parse_sig_data[w_pos], &dummy_sig_data[r_pos], w_len );
+
+            /* copy s of ECDSA signature data */
+            r_pos += (w_len + 1); // consider of tag(0x02) byte
+            w_pos += w_len;
+            s_len = dummy_sig_data[r_pos++];
+            w_len = s_len;
+            /* in the case that s length is 33 byte including padding byte */
+            if( s_len == 33 )
+            {
+                r_pos++;
+                w_len--;
+            }
+            /* length of s is less than 32 bytes */
+            else if( s_len <= 31 )
+            {
+                w_pos += (32 - s_len);
+            }
+            memcpy( &parse_sig_data[w_pos], &dummy_sig_data[r_pos], w_len );
+        }
+        else
+        {
+           return( MBEDTLS_ERR_PK_INVALID_ALG );
+        }
+        APP_ALL_PRINT( 5, "R_TSIP_TlsServersEphemeralEcdhPublicKeyRetrieves called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+        tsip_ret = R_TSIP_TlsServersEphemeralEcdhPublicKeyRetrieves(
+                            public_key_type,
+                            &ssl_handshake_randbytes[0],
+                            &ssl_handshake_randbytes[32],
+                            &ephemeral_ecdh_pubkey[0],
+                            &parse_sig_data[0],
+                            &enc_rsa_ecdsa_public_key[0],
+                            &ssl->encrypted_ephemeral_ecdh_public_key[0] );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if ( tsip_ret != 0 )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_TlsServersEphemeralEcdhPublicKeyRetrieves ret:%d \r\n", tsip_ret );
+            mbedtls_ssl_send_alert_message( ssl, MBEDTLS_SSL_ALERT_LEVEL_FATAL,
+                                            MBEDTLS_SSL_ALERT_MSG_DECRYPT_ERROR );
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_pk_verify", ret );
+            return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if !defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
         /* We don't need the peer's public key anymore. Free it,
@@ -2817,6 +3053,9 @@ static int ssl_write_client_key_exchange( mbedtls_ssl_context *ssl )
     size_t content_len;
     const mbedtls_ssl_ciphersuite_t *ciphersuite_info =
         ssl->handshake->ciphersuite_info;
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+#endif /* TSIP_TLS_API_ENABLE */
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> write client key exchange" ) );
 
@@ -2953,11 +3192,41 @@ static int ssl_write_client_key_exchange( mbedtls_ssl_context *ssl )
             mbedtls_ecdh_enable_restart( &ssl->handshake->ecdh_ctx );
         }
 #endif
-
+#if !defined(TSIP_TLS_API_ENABLE)
         ret = mbedtls_ecdh_make_public( &ssl->handshake->ecdh_ctx,
                                 &content_len,
                                 &ssl->out_msg[header_len], 1000,
                                 ssl->conf->f_rng, ssl->conf->p_rng );
+
+#else /* TSIP_TLS_API_ENABLE */
+        if( ssl->disable_tsip_tls_accel != 0U )
+        {
+            ret = mbedtls_ecdh_make_public( &ssl->handshake->ecdh_ctx,
+                                    &content_len,
+                                    &ssl->out_msg[header_len], 1000,
+                                    ssl->conf->f_rng, ssl->conf->p_rng );
+        }
+        else
+        {
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+        APP_ALL_PRINT( 5, "R_TSIP_GenerateTlsP256EccKeyIndex called.\r\n" );
+        tsip_ret = R_TSIP_GenerateTlsP256EccKeyIndex(
+                            &ssl->tls_p256_ecc_key_index,
+                            &ssl->ephemeral_ecdh_public_key[0] );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_GenerateTlsP256EccKeyIndex ret:%d \r\n", tsip_ret );
+            return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+        ret = tsip_ret;
+        }
+#endif /* TSIP_TLS_API_ENABLE */
         if( ret != 0 )
         {
             MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ecdh_make_public", ret );
@@ -2982,6 +3251,7 @@ ecdh_calc_secret:
         if( ssl->handshake->ecrs_enabled )
             content_len = ssl->handshake->ecrs_n;
 #endif
+#if !defined(TSIP_TLS_API_ENABLE)
         if( ( ret = mbedtls_ecdh_calc_secret( &ssl->handshake->ecdh_ctx,
                                   &ssl->handshake->pmslen,
                                   ssl->handshake->premaster,
@@ -2995,6 +3265,58 @@ ecdh_calc_secret:
 #endif
             return( ret );
         }
+#else /* TSIP_TLS_API_ENABLE */
+        if( ssl->disable_tsip_tls_accel != 0U )
+        {
+            if( ( ret = mbedtls_ecdh_calc_secret( &ssl->handshake->ecdh_ctx,
+                                      &ssl->handshake->pmslen,
+                                      ssl->handshake->premaster,
+                                      MBEDTLS_MPI_MAX_SIZE,
+                                      ssl->conf->f_rng, ssl->conf->p_rng ) ) != 0 )
+            {
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ecdh_calc_secret", ret );
+#if defined(MBEDTLS_SSL_ECP_RESTARTABLE_ENABLED)
+                if( ret == MBEDTLS_ERR_ECP_IN_PROGRESS )
+                    ret = MBEDTLS_ERR_SSL_CRYPTO_IN_PROGRESS;
+#endif
+                return( ret );
+            }
+        }
+        else
+        {
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+        APP_ALL_PRINT( 5, "R_TSIP_TlsGeneratePreMasterSecretWithEccP256Key called.\r\n" );
+        tsip_ret = R_TSIP_TlsGeneratePreMasterSecretWithEccP256Key(
+                            &ssl->encrypted_ephemeral_ecdh_public_key[0],
+                            &ssl->tls_p256_ecc_key_index,
+                            &ssl->tsip_premaster_secret[0] );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if ( tsip_ret == 0 )
+        {
+            ssl->out_msg[header_len] = 65;      // specify entire length including 0x04(uncompressed format)
+            header_len++;
+            ssl->out_msg[header_len] = 0x04;    // 04(uncompressed format)
+            header_len++;
+            content_len = 64;                   // set public key length
+
+            // set public key
+            memcpy( &ssl->out_msg[header_len],
+                    &ssl->ephemeral_ecdh_public_key[0],
+                    content_len );
+        }
+        else
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_TlsGeneratePreMasterSecretWithEccP256Key ret:%d \r\n", tsip_ret );
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ecdh_calc_secret", tsip_ret );
+            return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 
         MBEDTLS_SSL_DEBUG_ECDH( 3, &ssl->handshake->ecdh_ctx,
                                 MBEDTLS_DEBUG_ECDH_Z );
@@ -3634,14 +3956,17 @@ int mbedtls_ssl_handshake_client_step( mbedtls_ssl_context *ssl )
     switch( ssl->state )
     {
         case MBEDTLS_SSL_HELLO_REQUEST:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_HELLO_REQUEST" ) );
             ssl->state = MBEDTLS_SSL_CLIENT_HELLO;
             break;
 
        /*
         *  ==>   ClientHello
         */
-       case MBEDTLS_SSL_CLIENT_HELLO:
+        case MBEDTLS_SSL_CLIENT_HELLO:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_HELLO" ) );
            ret = mbedtls_ssl_write_client_hello( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_HELLO mbedtls_ssl_write_client_hello ret:%d", ret ) );
            break;
 
        /*
@@ -3651,25 +3976,35 @@ int mbedtls_ssl_handshake_client_step( mbedtls_ssl_context *ssl )
         *      ( CertificateRequest )
         *        ServerHelloDone
         */
-       case MBEDTLS_SSL_SERVER_HELLO:
-           ret = ssl_parse_server_hello( ssl );
-           break;
+        case MBEDTLS_SSL_SERVER_HELLO:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_HELLO" ) );
+            ret = ssl_parse_server_hello( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_HELLO ssl_parse_server_hello ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_SERVER_CERTIFICATE:
+        case MBEDTLS_SSL_SERVER_CERTIFICATE:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_CERTIFICATE" ) );
            ret = mbedtls_ssl_parse_certificate( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_CERTIFICATE mbedtls_ssl_parse_certificate ret:%d", ret ) );
            break;
 
-       case MBEDTLS_SSL_SERVER_KEY_EXCHANGE:
-           ret = ssl_parse_server_key_exchange( ssl );
-           break;
+        case MBEDTLS_SSL_SERVER_KEY_EXCHANGE:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_KEY_EXCHANGE" ) );
+            ret = ssl_parse_server_key_exchange( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_KEY_EXCHANGE ssl_parse_server_key_exchange ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_CERTIFICATE_REQUEST:
-           ret = ssl_parse_certificate_request( ssl );
-           break;
+        case MBEDTLS_SSL_CERTIFICATE_REQUEST:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CERTIFICATE_REQUEST" ) );
+            ret = ssl_parse_certificate_request( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CERTIFICATE_REQUEST ssl_parse_certificate_request ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_SERVER_HELLO_DONE:
-           ret = ssl_parse_server_hello_done( ssl );
-           break;
+        case MBEDTLS_SSL_SERVER_HELLO_DONE:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_HELLO_DONE" ) );
+            ret = ssl_parse_server_hello_done( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_HELLO_DONE ssl_parse_server_hello_done ret:%d", ret ) );
+            break;
 
        /*
         *  ==> ( Certificate/Alert  )
@@ -3678,25 +4013,35 @@ int mbedtls_ssl_handshake_client_step( mbedtls_ssl_context *ssl )
         *        ChangeCipherSpec
         *        Finished
         */
-       case MBEDTLS_SSL_CLIENT_CERTIFICATE:
-           ret = mbedtls_ssl_write_certificate( ssl );
-           break;
+        case MBEDTLS_SSL_CLIENT_CERTIFICATE:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_CERTIFICATE" ) );
+            ret = mbedtls_ssl_write_certificate( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_CERTIFICATE mbedtls_ssl_write_certificate ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_CLIENT_KEY_EXCHANGE:
-           ret = ssl_write_client_key_exchange( ssl );
-           break;
+        case MBEDTLS_SSL_CLIENT_KEY_EXCHANGE:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_KEY_EXCHANGE" ) );
+            ret = ssl_write_client_key_exchange( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_KEY_EXCHANGE ssl_write_client_key_exchange ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_CERTIFICATE_VERIFY:
-           ret = ssl_write_certificate_verify( ssl );
-           break;
+        case MBEDTLS_SSL_CERTIFICATE_VERIFY:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CERTIFICATE_VERIFY" ) );
+            ret = ssl_write_certificate_verify( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CERTIFICATE_VERIFY ssl_write_certificate_verify ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_CLIENT_CHANGE_CIPHER_SPEC:
-           ret = mbedtls_ssl_write_change_cipher_spec( ssl );
-           break;
+        case MBEDTLS_SSL_CLIENT_CHANGE_CIPHER_SPEC:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_CHANGE_CIPHER_SPEC" ) );
+            ret = mbedtls_ssl_write_change_cipher_spec( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_CHANGE_CIPHER_SPEC mbedtls_ssl_write_change_cipher_spec ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_CLIENT_FINISHED:
-           ret = mbedtls_ssl_write_finished( ssl );
-           break;
+        case MBEDTLS_SSL_CLIENT_FINISHED:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_FINISHED" ) );
+            ret = mbedtls_ssl_write_finished( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_FINISHED mbedtls_ssl_write_finished ret:%d", ret ) );
+            break;
 
        /*
         *  <==   ( NewSessionTicket )
@@ -3704,31 +4049,40 @@ int mbedtls_ssl_handshake_client_step( mbedtls_ssl_context *ssl )
         *        Finished
         */
 #if defined(MBEDTLS_SSL_SESSION_TICKETS)
-       case MBEDTLS_SSL_SERVER_NEW_SESSION_TICKET:
-           ret = ssl_parse_new_session_ticket( ssl );
-           break;
+        case MBEDTLS_SSL_SERVER_NEW_SESSION_TICKET:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_NEW_SESSION_TICKET" ) );
+            ret = ssl_parse_new_session_ticket( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_NEW_SESSION_TICKET ssl_parse_new_session_ticket ret:%d", ret ) );
+            break;
 #endif
 
-       case MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC:
-           ret = mbedtls_ssl_parse_change_cipher_spec( ssl );
-           break;
+        case MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC" ) );
+            ret = mbedtls_ssl_parse_change_cipher_spec( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC mbedtls_ssl_parse_change_cipher_spec ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_SERVER_FINISHED:
-           ret = mbedtls_ssl_parse_finished( ssl );
-           break;
+        case MBEDTLS_SSL_SERVER_FINISHED:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_FINISHED" ) );
+            ret = mbedtls_ssl_parse_finished( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_FINISHED mbedtls_ssl_parse_finished ret:%d", ret ) );
+            break;
 
-       case MBEDTLS_SSL_FLUSH_BUFFERS:
-           MBEDTLS_SSL_DEBUG_MSG( 2, ( "handshake: done" ) );
-           ssl->state = MBEDTLS_SSL_HANDSHAKE_WRAPUP;
-           break;
+        case MBEDTLS_SSL_FLUSH_BUFFERS:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_FLUSH_BUFFERS" ) );
+            MBEDTLS_SSL_DEBUG_MSG( 2, ( "handshake: done" ) );
+            ssl->state = MBEDTLS_SSL_HANDSHAKE_WRAPUP;
+            break;
 
-       case MBEDTLS_SSL_HANDSHAKE_WRAPUP:
-           mbedtls_ssl_handshake_wrapup( ssl );
-           break;
+        case MBEDTLS_SSL_HANDSHAKE_WRAPUP:
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_HANDSHAKE_WRAPUP" ) );
+            mbedtls_ssl_handshake_wrapup( ssl );
+            MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_HANDSHAKE_WRAPUP mbedtls_ssl_handshake_wrapup ret:%d", ret ) );
+            break;
 
-       default:
-           MBEDTLS_SSL_DEBUG_MSG( 1, ( "invalid state %d", ssl->state ) );
-           return( MBEDTLS_ERR_SSL_BAD_INPUT_DATA );
+        default:
+            MBEDTLS_SSL_DEBUG_MSG( 1, ( "invalid state %d", ssl->state ) );
+            return( MBEDTLS_ERR_SSL_BAD_INPUT_DATA );
    }
 
     return( ret );

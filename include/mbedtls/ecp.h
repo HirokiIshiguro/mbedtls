@@ -14,6 +14,8 @@
  *
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 /*
  *  Copyright The Mbed TLS Contributors
  *  SPDX-License-Identifier: Apache-2.0
@@ -423,6 +425,12 @@ typedef struct mbedtls_ecp_keypair
     mbedtls_ecp_group MBEDTLS_PRIVATE(grp);      /*!<  Elliptic curve and base point     */
     mbedtls_mpi MBEDTLS_PRIVATE(d);              /*!<  our secret value                  */
     mbedtls_ecp_point MBEDTLS_PRIVATE(Q);        /*!<  our public value                  */
+#if defined(TSIP_TLS_API_ENABLE)
+    uint32_t pubkey_n_spos;
+    uint32_t pubkey_n_epos;
+    uint32_t pubkey_e_spos;
+    uint32_t pubkey_e_epos;
+#endif /* TSIP_TLS_API_ENABLE */
 }
 mbedtls_ecp_keypair;
 

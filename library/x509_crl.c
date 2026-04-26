@@ -27,6 +27,8 @@
  *  http://www.itu.int/ITU-T/studygroups/com17/languages/X.690-0207.pdf
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_X509_CRL_PARSE_C)
@@ -56,7 +58,9 @@
 #if defined(_WIN32) && !defined(EFIX64) && !defined(EFI32)
 #include <windows.h>
 #else
+#if !defined(__CCRX__)
 #include <time.h>
+#endif /* __CCRX__ */
 #endif
 #endif
 

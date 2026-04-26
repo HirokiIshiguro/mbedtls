@@ -19,6 +19,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_SSL_H
 #define MBEDTLS_SSL_H
 #include "mbedtls/platform_util.h"
@@ -55,6 +58,15 @@
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
 #include "psa/crypto.h"
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include <platform.h> /* include bsp's platform.h before r_tsip_rx_if.h */
+#include "r_tsip_rx_if.h"
+#endif /* TSIP_TLS_API_ENABLE */
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+extern unsigned char g_tsip_endpointflg;
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
 
 /*
  * SSL Error codes
@@ -380,6 +392,11 @@
 #if !defined(MBEDTLS_SSL_CID_TLS1_3_PADDING_GRANULARITY)
 #define MBEDTLS_SSL_CID_TLS1_3_PADDING_GRANULARITY 16
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+#define TSIP_SSL_IN_PAYLOAD_LEN ( MBEDTLS_SSL_IN_CONTENT_LEN + 48 + 16 + 256 + 16 )
+#define TSIP_SSL_OUT_PAYLOAD_LEN ( MBEDTLS_SSL_IN_CONTENT_LEN + 48 + 16 + 256 + 16 )
+#endif /* TSIP_TLS_API_ENABLE */
 
 /** \} name SECTION: Module settings */
 
@@ -1712,6 +1729,30 @@ struct mbedtls_ssl_context
     char MBEDTLS_PRIVATE(own_verify_data)[MBEDTLS_SSL_VERIFY_DATA_MAX_LEN]; /*!<  previous handshake verify data */
     char MBEDTLS_PRIVATE(peer_verify_data)[MBEDTLS_SSL_VERIFY_DATA_MAX_LEN]; /*!<  previous handshake verify data */
 #endif /* MBEDTLS_SSL_RENEGOTIATION */
+
+#if defined(TSIP_TLS_API_ENABLE)
+    uint32_t                        tsip_cipher_suite;
+    uint8_t                         disable_tsip_tls_accel;
+
+    uint8_t                         client_server_random_value[64];
+    uint32_t                        tsip_premaster_secret[20];
+    uint32_t                        tsip_master_secret[20];
+
+    /* Server Certificate public key */
+    uint32_t                        tsip_server_rsa_pubkey[140];
+    uint32_t                        tsip_server_ecdsa_pubkey[24];
+
+    /* ephemeral ECDH public key */
+    tsip_tls_p256_ecc_key_index_t   tls_p256_ecc_key_index;
+    uint8_t                         ephemeral_ecdh_public_key[64];
+    uint32_t                        encrypted_ephemeral_ecdh_public_key[24];
+
+    /* Session key */
+    tsip_hmac_sha_key_index_t       tsip_clientmackey;
+    tsip_hmac_sha_key_index_t       tsip_servermackey;
+    tsip_aes_key_index_t            tsip_clientcommonkey;
+    tsip_aes_key_index_t            tsip_servercommonkey;
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     /* CID configuration to use in subsequent handshakes. */

@@ -21,6 +21,8 @@
  *  http://www.ietf.org/rfc/rfc4346.txt
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_SSL_TLS_C)
@@ -57,6 +59,50 @@
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
 #include "mbedtls/oid.h"
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include "mbedtls/x509_crt.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include <platform.h> /* include bsp's platform.h before r_tsip_rx_if.h */
+#include "r_tsip_rx_if.h"
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+
+// SHA handle backup
+static inline void tsip_tls_sha256_clone(tsip_sha_md5_handle_t *dst,
+                                         tsip_sha_md5_handle_t *src)
+{
+    *dst = *src;
+}
+
+#if defined(MBEDTLS_FUNC_ENABLE)
+unsigned char g_tsip_endpointflg;
+#endif /* MBEDTLS_FUNC_ENABLE */
+volatile uint32_t gTsipTlsProbeAesGcmEncryptTsipRecords = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmEncryptTsipBytes = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmDecryptTsipRecords = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmDecryptTsipBytes = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmEncryptSoftwareRecords = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmEncryptSoftwareBytes = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmDecryptSoftwareRecords = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmDecryptSoftwareBytes = 0U;
+volatile uint32_t gTsipTlsProbeSessionKeyTsipCalls = 0U;
+volatile uint32_t gTsipTlsProbeMasterSecretTsipCalls = 0U;
+volatile uint32_t gTsipTlsProbeVerifyDataTsipCalls = 0U;
+volatile uint32_t gTsipTlsProbeSha256TsipUpdates = 0U;
+volatile uint32_t gTsipTlsProbeSha256TsipBytes = 0U;
+volatile uint32_t gTsipTlsProbeSha256SoftwareUpdates = 0U;
+volatile uint32_t gTsipTlsProbeSha256SoftwareBytes = 0U;
+volatile uint32_t gTsipTlsProbeSessionKeyTicks = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmEncryptTicks = 0U;
+volatile uint32_t gTsipTlsProbeAesGcmDecryptTicks = 0U;
+volatile uint32_t gTsipTlsProbeSocketSendCalls = 0U;
+volatile uint32_t gTsipTlsProbeSocketSendBytes = 0U;
+volatile uint32_t gTsipTlsProbeSocketSendTicks = 0U;
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_TEST_HOOKS)
 static mbedtls_ssl_chk_buf_ptr_args chk_buf_ptr_fail_args;
@@ -416,7 +462,7 @@ static int ssl_tls12_populate_transform( mbedtls_ssl_transform *transform,
                                    const unsigned char randbytes[64],
                                    mbedtls_ssl_protocol_version tls_version,
                                    unsigned endpoint,
-                                   const mbedtls_ssl_context *ssl );
+                                   mbedtls_ssl_context *ssl );
 
 #if defined(MBEDTLS_SHA256_C)
 MBEDTLS_CHECK_RETURN_CRITICAL
@@ -575,6 +621,31 @@ void mbedtls_ssl_reset_checksum( mbedtls_ssl_context *ssl )
     mbedtls_sha512_starts( &ssl->handshake->fin_sha512, 1 );
 #endif
 #endif
+
+
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+
+#if defined(MBEDTLS_THREADING_C)
+    int ret;
+    if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+    {
+        APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+        return;
+    }
+#endif /* MBEDTLS_THREADING_C */
+
+    APP_ALL_PRINT( 5, "R_TSIP_Sha256Init called.\r\n" );
+    tsip_ret = R_TSIP_Sha256Init( &ssl->handshake->tsip_handshake_sha );
+    if( TSIP_SUCCESS != tsip_ret )
+    {
+        APP_ALL_PRINT( 1, "R_TSIP_Sha256Init ret:%d\r\n", tsip_ret );
+    }
+
+#if defined(MBEDTLS_THREADING_C)
+    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+#endif /* TSIP_TLS_API_ENABLE */
 }
 
 static void ssl_update_checksum_start( mbedtls_ssl_context *ssl,
@@ -584,7 +655,56 @@ static void ssl_update_checksum_start( mbedtls_ssl_context *ssl,
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
     psa_hash_update( &ssl->handshake->fin_sha256_psa, buf, len );
 #else
-    mbedtls_sha256_update( &ssl->handshake->fin_sha256, buf, len );
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+    {
+        mbedtls_sha256_update( &ssl->handshake->fin_sha256, buf, len );
+#if defined(TSIP_TLS_API_ENABLE)
+        gTsipTlsProbeSha256SoftwareUpdates++;
+        gTsipTlsProbeSha256SoftwareBytes += (uint32_t) len;
+#endif /* TSIP_TLS_API_ENABLE */
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        e_tsip_err_t tsip_ret;
+
+#if defined(MBEDTLS_THREADING_C)
+        int ret;
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+        {
+            APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+            return;
+        }
+#endif /* MBEDTLS_THREADING_C */
+
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Update called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Update( &ssl->handshake->tsip_handshake_sha,
+                                        (uint8_t *)buf,
+                                        len );
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Update ret:%d \r\n", tsip_ret );
+            return;
+        }
+        gTsipTlsProbeSha256TsipUpdates++;
+        gTsipTlsProbeSha256TsipBytes += (uint32_t) len;
+
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+    }
+#endif /* TSIP_TLS_API_ENABLE */
+
 #endif
 #endif
 #if defined(MBEDTLS_SHA384_C)
@@ -603,10 +723,59 @@ static void ssl_update_checksum_sha256( mbedtls_ssl_context *ssl,
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
     psa_hash_update( &ssl->handshake->fin_sha256_psa, buf, len );
 #else
-    mbedtls_sha256_update( &ssl->handshake->fin_sha256, buf, len );
-#endif
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+    {
+        mbedtls_sha256_update( &ssl->handshake->fin_sha256, buf, len );
+#if defined(TSIP_TLS_API_ENABLE)
+        gTsipTlsProbeSha256SoftwareUpdates++;
+        gTsipTlsProbeSha256SoftwareBytes += (uint32_t) len;
+#endif /* TSIP_TLS_API_ENABLE */
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        e_tsip_err_t tsip_ret;
+
+#if defined(MBEDTLS_THREADING_C)
+        int ret;
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+        {
+            APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+            return;
+        }
+#endif /* MBEDTLS_THREADING_C */
+
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Update called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Update( &ssl->handshake->tsip_handshake_sha,
+                                        (uint8_t *)buf,
+                                        len );
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Update ret:%d \r\n", tsip_ret );
+            return;
+        }
+        gTsipTlsProbeSha256TsipUpdates++;
+        gTsipTlsProbeSha256TsipBytes += (uint32_t) len;
+
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+    }
+#endif /* TSIP_TLS_API_ENABLE */
+
+#endif // MBEDTLS_USE_PSA_CRYPTO
 }
-#endif
+#endif // MBEDTLS_SHA256_C
 
 #if defined(MBEDTLS_SHA384_C)
 static void ssl_update_checksum_sha384( mbedtls_ssl_context *ssl,
@@ -671,6 +840,30 @@ static void ssl_handshake_params_init( mbedtls_ssl_handshake_params *handshake )
     !defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
     mbedtls_pk_init( &handshake->peer_pubkey );
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+
+#if defined(MBEDTLS_THREADING_C)
+    int ret;
+    if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+    {
+        APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+        return;
+    }
+#endif /* MBEDTLS_THREADING_C */
+
+    APP_ALL_PRINT( 5, "R_TSIP_Sha256Init called.\r\n" );
+    tsip_ret = R_TSIP_Sha256Init( &handshake->tsip_handshake_sha );
+    if( TSIP_SUCCESS != tsip_ret )
+    {
+        APP_ALL_PRINT( 1, "R_TSIP_Sha256Init ret:%d\r\n", tsip_ret );
+    }
+
+#if defined(MBEDTLS_THREADING_C)
+    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+#endif /* TSIP_TLS_API_ENABLE */
 }
 
 void mbedtls_ssl_transform_init( mbedtls_ssl_transform *transform )
@@ -3004,15 +3197,21 @@ int mbedtls_ssl_handshake_step( mbedtls_ssl_context *ssl )
     {
         MBEDTLS_SSL_DEBUG_MSG( 2, ( "client state: %s",
                                     mbedtls_ssl_states_str( ssl->state ) ) );
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        g_tsip_endpointflg = MBEDTLS_SSL_IS_CLIENT;
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
 
         switch( ssl->state )
         {
             case MBEDTLS_SSL_HELLO_REQUEST:
+                MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_HELLO_REQUEST" ) );
                 ssl->state = MBEDTLS_SSL_CLIENT_HELLO;
                 break;
 
             case MBEDTLS_SSL_CLIENT_HELLO:
+                MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_HELLO" ) );
                 ret = mbedtls_ssl_write_client_hello( ssl );
+                MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_CLIENT_HELLO mbedtls_ssl_write_client_hello ret:%d", ret ) );
                 break;
 
             default:
@@ -3032,6 +3231,9 @@ int mbedtls_ssl_handshake_step( mbedtls_ssl_context *ssl )
 #if defined(MBEDTLS_SSL_SRV_C)
     if( ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER )
     {
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        g_tsip_endpointflg = MBEDTLS_SSL_IS_SERVER;
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
 #if defined(MBEDTLS_SSL_PROTO_TLS1_3)
         if( mbedtls_ssl_conf_is_tls13_only( ssl->conf ) )
             ret = mbedtls_ssl_tls13_handshake_server_step( ssl );
@@ -3265,6 +3467,37 @@ void mbedtls_ssl_handshake_free( mbedtls_ssl_context *ssl )
         handshake->async_in_progress = 0;
     }
 #endif /* MBEDTLS_SSL_ASYNC_PRIVATE */
+
+#if defined(TSIP_TLS_API_ENABLE)
+        if( ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT )
+        {
+            e_tsip_err_t tsip_ret;
+            uint8_t dummy_data[32];
+            uint32_t dummy_len;
+
+#if defined(MBEDTLS_THREADING_C)
+            int ret;
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            {
+                APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+                return;
+            }
+#endif /* MBEDTLS_THREADING_C */
+
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256Final called.\r\n" );
+            tsip_ret = R_TSIP_Sha256Final( &ssl->handshake->tsip_handshake_sha,
+                                            dummy_data,
+                                            &dummy_len );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256Final ret:%d \r\n", tsip_ret );
+                return;
+            }
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_SHA256_C)
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
@@ -4857,20 +5090,58 @@ static int ssl_get_handshake_transcript_sha256( mbedtls_ssl_context *ssl,
     if( dst_len < 32 )
         return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
 
-    mbedtls_sha256_init( &sha256 );
-    mbedtls_sha256_clone( &sha256, &ssl->handshake->fin_sha256 );
-
-    if( ( ret = mbedtls_sha256_finish( &sha256, dst ) ) != 0 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
     {
-        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_sha256_finish", ret );
-        goto exit;
-    }
+        mbedtls_sha256_init( &sha256 );
+        mbedtls_sha256_clone( &sha256, &ssl->handshake->fin_sha256 );
+        if( ( ret = mbedtls_sha256_finish( &sha256, dst ) ) != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_sha256_finish", ret );
+            goto exit;
+        }
 
-    *olen = 32;
+        *olen = 32;
 
 exit:
+        mbedtls_sha256_free( &sha256 );
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        e_tsip_err_t tsip_ret;
+        tsip_sha_md5_handle_t bk_shactx;
 
-    mbedtls_sha256_free( &sha256 );
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+        tsip_tls_sha256_clone( &bk_shactx,
+                               &ssl->handshake->tsip_handshake_sha );
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Final called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Final( &ssl->handshake->tsip_handshake_sha,
+                                       dst,
+                                       olen );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Final ret:%d \r\n", tsip_ret );
+            return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+        tsip_tls_sha256_clone( &ssl->handshake->tsip_handshake_sha,
+                               &bk_shactx );
+        ret = tsip_ret;
+    }
+#endif /* TSIP_TLS_API_ENABLE */
+
     return( ret );
 }
 #endif /* MBEDTLS_SHA256_C */
@@ -5331,7 +5602,7 @@ static int ssl_set_handshake_prfs( mbedtls_ssl_handshake_params *handshake,
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_compute_master( mbedtls_ssl_handshake_params *handshake,
                                unsigned char *master,
-                               const mbedtls_ssl_context *ssl )
+                               mbedtls_ssl_context *ssl )
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
 
@@ -5359,6 +5630,11 @@ static int ssl_compute_master( mbedtls_ssl_handshake_params *handshake,
     unsigned char const *seed = handshake->randbytes;
     size_t seed_len = 64;
 
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+    mbedtls_ssl_session *session = ssl->session_negotiate;
+#endif /* TSIP_TLS_API_ENABLE */
+
 #if !defined(MBEDTLS_DEBUG_C) &&                    \
     !defined(MBEDTLS_SSL_EXTENDED_MASTER_SECRET) && \
     !(defined(MBEDTLS_USE_PSA_CRYPTO) &&            \
@@ -5384,6 +5660,16 @@ static int ssl_compute_master( mbedtls_ssl_handshake_params *handshake,
                                   session_hash, seed_len );
     }
 #endif /* MBEDTLS_SSL_EXTENDED_MASTER_SECRET */
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_CLIENT == ssl->conf->endpoint ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        memcpy( &ssl->client_server_random_value, handshake->randbytes, 64 );
+    }
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_USE_PSA_CRYPTO) &&                   \
     defined(MBEDTLS_KEY_EXCHANGE_SOME_PSK_ENABLED)
@@ -5458,22 +5744,127 @@ static int ssl_compute_master( mbedtls_ssl_handshake_params *handshake,
     else
 #endif
     {
-        ret = handshake->tls_prf( handshake->premaster, handshake->pmslen,
-                                  lbl, seed, seed_len,
-                                  master,
-                                  master_secret_len );
-        if( ret != 0 )
+#if defined(TSIP_TLS_API_ENABLE)
+        if( ssl->disable_tsip_tls_accel != 0U )
         {
-            MBEDTLS_SSL_DEBUG_RET( 1, "prf", ret );
-            return( ret );
+            ret = handshake->tls_prf( handshake->premaster, handshake->pmslen,
+                                      lbl, seed, seed_len,
+                                      master,
+                                      master_secret_len );
+            if( ret != 0 )
+            {
+                MBEDTLS_SSL_DEBUG_RET( 1, "prf", ret );
+                return( ret );
+            }
+
+            MBEDTLS_SSL_DEBUG_BUF( 3, "premaster secret",
+                                   handshake->premaster,
+                                   handshake->pmslen );
+
+            mbedtls_platform_zeroize( handshake->premaster,
+                                      sizeof(handshake->premaster) );
         }
+        else
+#endif /* TSIP_TLS_API_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+            ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+        {
+            ret = handshake->tls_prf( handshake->premaster, handshake->pmslen,
+                                      lbl, seed, seed_len,
+                                      master,
+                                      master_secret_len );
+            if( ret != 0 )
+            {
+                MBEDTLS_SSL_DEBUG_RET( 1, "prf", ret );
+                return( ret );
+            }
 
-        MBEDTLS_SSL_DEBUG_BUF( 3, "premaster secret",
-                               handshake->premaster,
-                               handshake->pmslen );
+            MBEDTLS_SSL_DEBUG_BUF( 3, "premaster secret",
+                                   handshake->premaster,
+                                   handshake->pmslen );
 
-        mbedtls_platform_zeroize( handshake->premaster,
-                                  sizeof(handshake->premaster) );
+            mbedtls_platform_zeroize( handshake->premaster,
+                                      sizeof(handshake->premaster) );
+        }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            ssl->tsip_cipher_suite = 0U;
+            switch( session->ciphersuite )
+            {
+            case MBEDTLS_TLS_RSA_WITH_AES_128_CBC_SHA256:
+                ssl->tsip_cipher_suite = R_TSIP_TLS_RSA_WITH_AES_128_CBC_SHA256;
+                break;
+            case MBEDTLS_TLS_RSA_WITH_AES_256_CBC_SHA256:
+                ssl->tsip_cipher_suite = R_TSIP_TLS_RSA_WITH_AES_256_CBC_SHA256;
+                break;
+            case MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:
+                ssl->tsip_cipher_suite = R_TSIP_TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256;
+                break;
+            case MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256:
+                ssl->tsip_cipher_suite = R_TSIP_TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256;
+                break;
+            case MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:
+                ssl->tsip_cipher_suite = R_TSIP_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256;
+                break;
+            case MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:
+                ssl->tsip_cipher_suite = R_TSIP_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
+                break;
+            default:
+                MBEDTLS_SSL_DEBUG_MSG( 1, ( "Invalid cipher suite is selected") );
+                return( MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE );
+            }
+
+#if defined(MBEDTLS_SSL_EXTENDED_MASTER_SECRET)
+            APP_ALL_PRINT( 5, "R_TSIP_TlsGenerateExtendedMasterSecret called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            tsip_ret = R_TSIP_TlsGenerateExtendedMasterSecret( ssl->tsip_cipher_suite,
+                                                               &ssl->tsip_premaster_secret[0],
+                                                               (uint8_t*)&session_hash[0],
+                                                               &ssl->tsip_master_secret[0] );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_TlsGenerateExtendedMasterSecret ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+            gTsipTlsProbeMasterSecretTsipCalls++;
+#else /* MBEDTLS_SSL_EXTENDED_MASTER_SECRET */
+            APP_ALL_PRINT( 5, "R_TSIP_TlsGenerateMasterSecret called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            tsip_ret = R_TSIP_TlsGenerateMasterSecret( ssl->tsip_cipher_suite,
+                                                       &ssl->tsip_premaster_secret[0],
+                                                       &ssl->client_server_random_value[0],
+                                                       &ssl->client_server_random_value[32],
+                                                       &ssl->tsip_master_secret[0] );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_TlsGenerateMasterSecret ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+            gTsipTlsProbeMasterSecretTsipCalls++;
+#endif /* MBEDTLS_SSL_EXTENDED_MASTER_SECRET */
+            mbedtls_platform_zeroize( ssl->tsip_premaster_secret,
+                                      sizeof(ssl->tsip_premaster_secret) );
+        }
+#endif /* TSIP_TLS_API_ENABLE */
     }
 
     return( 0 );
@@ -5509,6 +5900,10 @@ int mbedtls_ssl_derive_keys( mbedtls_ssl_context *ssl )
     /* Swap the client and server random values:
      * - MS derivation wanted client+server (RFC 5246 8.1)
      * - key derivation wants server+client (RFC 5246 6.3) */
+#if defined(TSIP_TLS_API_ENABLE)
+    if( ssl->conf->endpoint == MBEDTLS_SSL_IS_SERVER ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE */
     {
         unsigned char tmp[64];
         memcpy( tmp, ssl->handshake->randbytes, 64 );
@@ -5594,21 +5989,72 @@ void ssl_calc_verify_tls_sha256( const mbedtls_ssl_context *ssl,
     MBEDTLS_SSL_DEBUG_BUF( 3, "PSA calculated verify result", hash, *hlen );
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= PSA calc verify" ) );
 #else
-    mbedtls_sha256_context sha256;
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+    {
+        mbedtls_sha256_context sha256;
 
-    mbedtls_sha256_init( &sha256 );
+        mbedtls_sha256_init( &sha256 );
 
-    MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> calc verify sha256" ) );
+        MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> calc verify sha256" ) );
 
-    mbedtls_sha256_clone( &sha256, &ssl->handshake->fin_sha256 );
-    mbedtls_sha256_finish( &sha256, hash );
+        mbedtls_sha256_clone( &sha256, &ssl->handshake->fin_sha256 );
 
-    *hlen = 32;
+        mbedtls_sha256_finish( &sha256, hash );
 
-    MBEDTLS_SSL_DEBUG_BUF( 3, "calculated verify result", hash, *hlen );
-    MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= calc verify" ) );
+        *hlen = 32;
 
-    mbedtls_sha256_free( &sha256 );
+        MBEDTLS_SSL_DEBUG_BUF( 3, "calculated verify result", hash, *hlen );
+        MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= calc verify" ) );
+
+        mbedtls_sha256_free( &sha256 );
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        e_tsip_err_t tsip_ret;
+        uint32_t hash_len;
+        tsip_sha_md5_handle_t bk_shactx;
+
+        MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> calc verify sha256" ) );
+
+#if defined(MBEDTLS_THREADING_C)
+        int ret;
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+        {
+            APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+            return;
+        }
+#endif /* MBEDTLS_THREADING_C */
+        tsip_tls_sha256_clone( &bk_shactx,
+                               &ssl->handshake->tsip_handshake_sha );
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Final called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Final( &ssl->handshake->tsip_handshake_sha,
+                                       hash,
+                                       &hash_len );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Final ret:%d \r\n", tsip_ret );
+            return;
+        }
+        tsip_tls_sha256_clone( &ssl->handshake->tsip_handshake_sha,
+                               &bk_shactx );
+
+        *hlen = 32;
+
+        MBEDTLS_SSL_DEBUG_BUF( 3, "calculated verify result", hash, *hlen );
+        MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= calc verify" ) );
+    }
+#endif /* TSIP_TLS_API_ENABLE */
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
     return;
 }
@@ -6601,6 +7047,34 @@ crt_verify:
     chain = NULL;
 #endif /* MBEDTLS_SSL_KEEP_PEER_CERTIFICATE */
 
+#if defined(TSIP_TLS_API_ENABLE)
+    if ( tsip_server_pubkey_type == R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048 )
+    {
+        // stored server public key (RSA 2048 bit)
+        memcpy( &ssl->tsip_server_rsa_pubkey[0],
+                &temp_tsip_server_rsa_pubkey[0],
+                560 );
+        memset( &temp_tsip_server_rsa_pubkey[0],
+                0,
+                sizeof( temp_tsip_server_rsa_pubkey ) );
+    }
+    else if ( tsip_server_pubkey_type == R_TSIP_TLS_PUBLIC_KEY_TYPE_ECDSA_P256 )
+    {
+        // stored server public key (ECC 256 bit)
+        memcpy( &ssl->tsip_server_ecdsa_pubkey[0],
+                &temp_tsip_server_ecdsa_pubkey[0],
+                96 );
+        memset( &temp_tsip_server_ecdsa_pubkey[0],
+                0,
+                sizeof( temp_tsip_server_ecdsa_pubkey ) );
+    }
+    else
+    {
+        APP_ALL_PRINT( 1, "copying server public key failed.\r\n" );
+        return -1;        // NG
+    }
+#endif /* TSIP_TLS_API_ENABLE */
+
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= parse certificate" ) );
 
 exit:
@@ -6639,7 +7113,15 @@ static void ssl_calc_finished_tls_sha256(
     psa_status_t status;
 #else
     mbedtls_sha256_context sha256;
-#endif
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+#if defined(MBEDTLS_THREADING_C)
+    int ret;
+#endif /* MBEDTLS_THREADING_C */
+    uint8_t hash_val[32]; // hash value
+    uint32_t hash_len;    // hash length
+#endif /* TSIP_TLS_API_ENABLE */
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
 
     mbedtls_ssl_session *session = ssl->session_negotiate;
     if( !session )
@@ -6668,28 +7150,6 @@ static void ssl_calc_finished_tls_sha256(
         return;
     }
     MBEDTLS_SSL_DEBUG_BUF( 3, "PSA calculated padbuf", padbuf, 32 );
-#else
-
-    mbedtls_sha256_init( &sha256 );
-
-    MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> calc  finished tls sha256" ) );
-
-    mbedtls_sha256_clone( &sha256, &ssl->handshake->fin_sha256 );
-
-    /*
-     * TLSv1.2:
-     *   hash = PRF( master, finished_label,
-     *               Hash( handshake ) )[0.11]
-     */
-
-#if !defined(MBEDTLS_SHA256_ALT)
-    MBEDTLS_SSL_DEBUG_BUF( 4, "finished sha2 state", (unsigned char *)
-                   sha256.state, sizeof( sha256.state ) );
-#endif
-
-    mbedtls_sha256_finish( &sha256, padbuf );
-    mbedtls_sha256_free( &sha256 );
-#endif /* MBEDTLS_USE_PSA_CRYPTO */
 
     ssl->handshake->tls_prf( session->master, 48, sender,
                              padbuf, 32, buf, len );
@@ -6697,6 +7157,131 @@ static void ssl_calc_finished_tls_sha256(
     MBEDTLS_SSL_DEBUG_BUF( 3, "calc finished result", buf, len );
 
     mbedtls_platform_zeroize(  padbuf, sizeof(  padbuf ) );
+#else /* MBEDTLS_USE_PSA_CRYPTO */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+    {
+        if( ssl->disable_tsip_tls_accel != 0U )
+        {
+            MBEDTLS_SSL_DEBUG_MSG( 2, ( "using software finished-data fallback" ) );
+        }
+        mbedtls_sha256_init( &sha256 );
+
+        MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> calc  finished tls sha256" ) );
+
+        mbedtls_sha256_clone( &sha256, &ssl->handshake->fin_sha256 );
+
+        /*
+         * TLSv1.2:
+         *   hash = PRF( master, finished_label,
+         *               Hash( handshake ) )[0.11]
+         */
+
+#if !defined(MBEDTLS_SHA256_ALT)
+        MBEDTLS_SSL_DEBUG_BUF( 4, "finished sha2 state", (unsigned char *)
+                                sha256.state, sizeof( sha256.state ) );
+#endif
+
+        mbedtls_sha256_finish( &sha256, padbuf );
+        mbedtls_sha256_free( &sha256 );
+
+        ssl->handshake->tls_prf( session->master, 48, sender,
+                                 padbuf, 32, buf, len );
+
+        MBEDTLS_SSL_DEBUG_BUF( 3, "calc finished result", buf, len );
+
+        mbedtls_platform_zeroize(  padbuf, sizeof(  padbuf ) );
+
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        /* create Client Finished Data */
+        tsip_sha_md5_handle_t bk_shactx;
+
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+        {
+            APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+            return;
+        }
+#endif /* MBEDTLS_THREADING_C */
+        tsip_tls_sha256_clone( &bk_shactx,
+                               &ssl->handshake->tsip_handshake_sha );
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Final called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Final( &ssl->handshake->tsip_handshake_sha,
+                                       hash_val,
+                                       &hash_len );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Final ret:%d \r\n", tsip_ret );
+            return;
+        }
+        tsip_tls_sha256_clone( &ssl->handshake->tsip_handshake_sha,
+                               &bk_shactx );
+
+        if( from == MBEDTLS_SSL_IS_CLIENT )
+        {
+            APP_ALL_PRINT( 5, "R_TSIP_TlsGenerateVerifyData called. \r\n" );
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            {
+                APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+                return;
+            }
+#endif /* MBEDTLS_THREADING_C */
+            tsip_ret = R_TSIP_TlsGenerateVerifyData(
+                       R_TSIP_TLS_GENERATE_CLIENT_VERIFY,    // 0: Client Generate
+                       &ssl->tsip_master_secret[0],
+                       hash_val,
+                       buf );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "Client R_TSIP_TlsGenerateVerifyData tsip_ret:%d \r\n", tsip_ret );
+                return;
+            }
+            gTsipTlsProbeVerifyDataTsipCalls++;
+        }
+        else
+        {
+            APP_ALL_PRINT( 5, "R_TSIP_TlsGenerateVerifyData called. \r\n" );
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            {
+                APP_ALL_PRINT( 1, "mbedtls_mutex_lock failed ret:%d\r\n", ret );
+                return;
+            }
+#endif /* MBEDTLS_THREADING_C */
+            tsip_ret = R_TSIP_TlsGenerateVerifyData(
+                       R_TSIP_TLS_GENERATE_SERVER_VERIFY,    // 1: server verify
+                       &ssl->tsip_master_secret[0],
+                       hash_val,
+                       buf );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "Server R_TSIP_TlsGenerateVerifyData tsip_ret:%d \r\n", tsip_ret );
+                return;
+            }
+            gTsipTlsProbeVerifyDataTsipCalls++;
+        }
+    }
+#endif /* TSIP_TLS_API_ENABLE */
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= calc  finished" ) );
 }
@@ -7135,7 +7720,7 @@ static int ssl_tls12_populate_transform( mbedtls_ssl_transform *transform,
                                    const unsigned char randbytes[64],
                                    mbedtls_ssl_protocol_version tls_version,
                                    unsigned endpoint,
-                                   const mbedtls_ssl_context *ssl )
+                                   mbedtls_ssl_context *ssl )
 {
     int ret = 0;
     unsigned char keyblk[256];
@@ -7152,6 +7737,10 @@ static int ssl_tls12_populate_transform( mbedtls_ssl_transform *transform,
     const mbedtls_cipher_info_t *cipher_info;
     const mbedtls_md_info_t *md_info;
 #endif /* !MBEDTLS_USE_PSA_CRYPTO */
+#if defined(TSIP_TLS_API_ENABLE)
+    uint8_t nonce_explicit[8];
+    e_tsip_err_t tsip_ret;
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
     psa_key_type_t key_type;
@@ -7275,12 +7864,71 @@ static int ssl_tls12_populate_transform( mbedtls_ssl_transform *transform,
     /*
      * Compute key block using the PRF
      */
-    ret = tls_prf( master, 48, "key expansion", randbytes, 64, keyblk, 256 );
-    if( ret != 0 )
+#if defined(TSIP_TLS_API_ENABLE)
+    if( ssl->disable_tsip_tls_accel != 0U )
     {
-        MBEDTLS_SSL_DEBUG_RET( 1, "prf", ret );
-        return( ret );
+        MBEDTLS_SSL_DEBUG_MSG( 2, ( "using software key expansion fallback" ) );
+        ret = tls_prf( master, 48, "key expansion", randbytes, 64, keyblk, 256 );
+        if( ret != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "prf", ret );
+            return( ret );
+        }
     }
+    else
+#endif /* TSIP_TLS_API_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+    {
+        ret = tls_prf( master, 48, "key expansion", randbytes, 64, keyblk, 256 );
+        if( ret != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "prf", ret );
+            return( ret );
+        }
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        memset( &nonce_explicit[0], 0x00, 8 );
+        APP_ALL_PRINT( 5, "R_TSIP_TlsGenerateSessionKey called.\r\n" );
+        TickType_t xProbeStart = xTaskGetTickCount();
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+        unsigned char dummy_client_iv[16];
+        unsigned char dummy_server_iv[16];
+        tsip_ret = R_TSIP_TlsGenerateSessionKey( ssl->tsip_cipher_suite,
+                                                 &ssl->tsip_master_secret[0],
+                                                 &ssl->client_server_random_value[0],
+                                                 &ssl->client_server_random_value[32],
+                                                 &nonce_explicit[0],
+                                                 &ssl->tsip_clientmackey,
+                                                 &ssl->tsip_servermackey,
+                                                 &ssl->tsip_clientcommonkey,
+                                                 &ssl->tsip_servercommonkey,
+                                                 &dummy_client_iv[0],
+                                                 &dummy_server_iv[0] );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        gTsipTlsProbeSessionKeyTicks +=
+            (uint32_t)( xTaskGetTickCount() - xProbeStart );
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_TlsGenerateSessionKey ret:%d \r\n", tsip_ret );
+            return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+        gTsipTlsProbeSessionKeyTsipCalls++;
+    }
+#endif /* TSIP_TLS_API_ENABLE */
 
     MBEDTLS_SSL_DEBUG_MSG( 3, ( "ciphersuite = %s",
                            mbedtls_ssl_get_ciphersuite_name( ciphersuite ) ) );
@@ -7679,49 +8327,134 @@ int mbedtls_ssl_get_key_exchange_md_tls1_2( mbedtls_ssl_context *ssl,
                                             mbedtls_md_type_t md_alg )
 {
     int ret = 0;
-    mbedtls_md_context_t ctx;
-    const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type( md_alg );
-    *hashlen = mbedtls_md_get_size( md_info );
 
-    MBEDTLS_SSL_DEBUG_MSG( 3, ( "Perform mbedtls-based computation of digest of ServerKeyExchange" ) );
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+        ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+    {
+        mbedtls_md_context_t ctx;
+        const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type( md_alg );
+        *hashlen = mbedtls_md_get_size( md_info );
 
-    mbedtls_md_init( &ctx );
+        MBEDTLS_SSL_DEBUG_MSG( 3, ( "Perform mbedtls-based computation of digest of ServerKeyExchange" ) );
 
-    /*
-     * digitally-signed struct {
-     *     opaque client_random[32];
-     *     opaque server_random[32];
-     *     ServerDHParams params;
-     * };
-     */
-    if( ( ret = mbedtls_md_setup( &ctx, md_info, 0 ) ) != 0 )
-    {
-        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_setup", ret );
-        goto exit;
-    }
-    if( ( ret = mbedtls_md_starts( &ctx ) ) != 0 )
-    {
-        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_starts", ret );
-        goto exit;
-    }
-    if( ( ret = mbedtls_md_update( &ctx, ssl->handshake->randbytes, 64 ) ) != 0 )
-    {
-        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_update", ret );
-        goto exit;
-    }
-    if( ( ret = mbedtls_md_update( &ctx, data, data_len ) ) != 0 )
-    {
-        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_update", ret );
-        goto exit;
-    }
-    if( ( ret = mbedtls_md_finish( &ctx, hash ) ) != 0 )
-    {
-        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_finish", ret );
-        goto exit;
-    }
+        mbedtls_md_init( &ctx );
 
-exit:
-    mbedtls_md_free( &ctx );
+        /*
+         * digitally-signed struct {
+         *     opaque client_random[32];
+         *     opaque server_random[32];
+         *     ServerDHParams params;
+         * };
+         */
+        if( ( ret = mbedtls_md_setup( &ctx, md_info, 0 ) ) != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_setup", ret );
+            goto exit;
+        }
+        if( ( ret = mbedtls_md_starts( &ctx ) ) != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_starts", ret );
+            goto exit;
+        }
+        if( ( ret = mbedtls_md_update( &ctx, ssl->handshake->randbytes, 64 ) ) != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_update", ret );
+            goto exit;
+        }
+        if( ( ret = mbedtls_md_update( &ctx, data, data_len ) ) != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_update", ret );
+            goto exit;
+        }
+        if( ( ret = mbedtls_md_finish( &ctx, hash ) ) != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_md_finish", ret );
+            goto exit;
+        }
+#if defined(TSIP_TLS_API_ENABLE)
+        if( MBEDTLS_MD_SHA256 == md_alg )
+        {
+            gTsipTlsProbeSha256SoftwareUpdates += 2U;
+            gTsipTlsProbeSha256SoftwareBytes += (uint32_t)( 64U + data_len );
+        }
+#endif /* TSIP_TLS_API_ENABLE */
+
+    exit:
+        mbedtls_md_free( &ctx );
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        e_tsip_err_t tsip_ret;
+        tsip_sha_md5_handle_t ctx;
+        uint32_t hash_length;
+
+        const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type( md_alg );
+        *hashlen = mbedtls_md_get_size( md_info );
+        MBEDTLS_SSL_DEBUG_MSG( 3, ( "Perform mbedtls-based computation of digest of ServerKeyExchange" ) );
+
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Init called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Init( &ctx );
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Init ret:%d \r\n", tsip_ret );
+            return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Update called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Update( &ctx,
+                                        (uint8_t *)ssl->handshake->randbytes,
+                                        64 );
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Update ret:%d \r\n", tsip_ret );
+            return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Update called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Update( &ctx, (uint8_t *)data, data_len );
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Update ret:%d \r\n", tsip_ret );
+            return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Final called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Final( &ctx, hash, &hash_length );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Final ret:%d \r\n", tsip_ret );
+            return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+        gTsipTlsProbeSha256TsipUpdates += 2U;
+        gTsipTlsProbeSha256TsipBytes += (uint32_t)( 64U + data_len );
+
+        mbedtls_platform_zeroize( &ctx, sizeof( tsip_sha_md5_handle_t ) );
+        ret = tsip_ret;
+    }
+#endif /* TSIP_TLS_API_ENABLE */
 
     if( ret != 0 )
         mbedtls_ssl_send_alert_message( ssl, MBEDTLS_SSL_ALERT_LEVEL_FATAL,
@@ -7988,7 +8721,7 @@ static int ssl_session_load_tls12( mbedtls_ssl_session *session,
             ( (uint64_t) p[7]       );
     p += 8;
 
-    session->start = (time_t) start;
+    session->start = (mbedtls_time_t) start;
 #endif /* MBEDTLS_HAVE_TIME */
 
     /*

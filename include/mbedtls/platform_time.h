@@ -19,10 +19,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_PLATFORM_TIME_H
 #define MBEDTLS_PLATFORM_TIME_H
 
 #include "mbedtls/build_info.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,8 +39,12 @@ extern "C" {
 typedef MBEDTLS_PLATFORM_TIME_TYPE_MACRO mbedtls_time_t;
 #else
 /* For time_t */
+#if defined(__CCRX__)
+typedef uint32_t        mbedtls_time_t;
+#else /* __CCRX__ */
 #include <time.h>
 typedef time_t mbedtls_time_t;
+#endif /* __CCRX__ */
 #endif /* MBEDTLS_PLATFORM_TIME_TYPE_MACRO */
 
 /*

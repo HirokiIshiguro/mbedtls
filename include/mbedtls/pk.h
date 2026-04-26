@@ -20,6 +20,8 @@
  *  limitations under the License.
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_PK_H
 #define MBEDTLS_PK_H
 #include "mbedtls/private_access.h"
@@ -48,6 +50,16 @@
     !defined(inline) && !defined(__cplusplus)
 #define inline __inline
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include <platform.h> /* include bsp's platform.h before r_tsip_rx_if.h */
+#include "r_tsip_rx_if.h"
+
+extern tsip_rsa2048_private_key_index_t rsa2048_private_key;
+extern tsip_rsa2048_public_key_index_t  rsa2048_public_key;
+extern tsip_ecc_private_key_index_t     eccp256_private_key;
+extern tsip_ecc_public_key_index_t      eccp256_public_key;
+#endif /* TSIP_TLS_API_ENABLE */
 
 /** Memory allocation failed. */
 #define MBEDTLS_ERR_PK_ALLOC_FAILED        -0x3F80

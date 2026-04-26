@@ -17,6 +17,8 @@
  *  limitations under the License.
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_DEBUG_C)
@@ -30,6 +32,7 @@
 #define mbedtls_time_t      time_t
 #define mbedtls_snprintf    snprintf
 #define mbedtls_vsnprintf   vsnprintf
+#define mbedtls_printf      printf
 #endif
 
 #include "mbedtls/debug.h"
@@ -418,5 +421,32 @@ void mbedtls_debug_printf_ecdh( const mbedtls_ssl_context *ssl, int level,
 #endif
 }
 #endif /* MBEDTLS_ECDH_C */
+
+#if defined(TSIP_TLS_API_ENABLE)
+void mbedtls_tsip_debug_print_msg( const char *strfunc, int line,
+                                                 int level, const char *format, ... )
+{
+    va_list argp;
+    char str[DEBUG_BUF_SIZE];
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+
+    if( level > debug_threshold )
+    {
+        return;
+    }
+
+    va_start( argp, format );
+    ret = mbedtls_vsnprintf( str, DEBUG_BUF_SIZE, format, argp );
+    va_end( argp );
+
+    if( ret >= 0 && ret < DEBUG_BUF_SIZE - 1 )
+    {
+        str[ret]     = '\n';
+        str[ret + 1] = '\0';
+    }
+
+    mbedtls_printf( "\r\nl:%d %s: %s\r\n", line, strfunc, str );
+}
+#endif /* TSIP_TLS_API_ENABLE */
 
 #endif /* MBEDTLS_DEBUG_C */

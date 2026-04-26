@@ -22,6 +22,8 @@
  *  http://csrc.nist.gov/publications/fips/fips180-2/fips180-2.pdf
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_SHA256_C)
@@ -29,6 +31,7 @@
 #include "mbedtls/sha256.h"
 #include "mbedtls/platform_util.h"
 #include "mbedtls/error.h"
+#include "mbedtls/debug.h"
 
 #include <string.h>
 
@@ -43,6 +46,15 @@
 #define mbedtls_free       free
 #endif /* MBEDTLS_PLATFORM_C */
 #endif /* MBEDTLS_SELF_TEST */
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include "ssl_misc.h"
+#include "mbedtls/ssl.h"
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(__aarch64__)
 #  if defined(MBEDTLS_SHA256_USE_A64_CRYPTO_IF_PRESENT) || \
@@ -186,6 +198,10 @@ void mbedtls_sha256_clone( mbedtls_sha256_context *dst,
  */
 int mbedtls_sha256_starts( mbedtls_sha256_context *ctx, int is224 )
 {
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+#endif /* TSIP_TLS_API_ENABLE */
+
     SHA256_VALIDATE_RET( ctx != NULL );
 
 #if defined(MBEDTLS_SHA224_C)
@@ -194,35 +210,65 @@ int mbedtls_sha256_starts( mbedtls_sha256_context *ctx, int is224 )
     SHA256_VALIDATE_RET( is224 == 0 );
 #endif
 
-    ctx->total[0] = 0;
-    ctx->total[1] = 0;
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == g_tsip_endpointflg )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+    {
+        APP_ALL_PRINT( 5, "called. \r\n" );
+        ctx->total[0] = 0;
+        ctx->total[1] = 0;
 
-    if( is224 == 0 )
-    {
-        /* SHA-256 */
-        ctx->state[0] = 0x6A09E667;
-        ctx->state[1] = 0xBB67AE85;
-        ctx->state[2] = 0x3C6EF372;
-        ctx->state[3] = 0xA54FF53A;
-        ctx->state[4] = 0x510E527F;
-        ctx->state[5] = 0x9B05688C;
-        ctx->state[6] = 0x1F83D9AB;
-        ctx->state[7] = 0x5BE0CD19;
-    }
-    else
-    {
+        if( is224 == 0 )
+        {
+            /* SHA-256 */
+            ctx->state[0] = 0x6A09E667;
+            ctx->state[1] = 0xBB67AE85;
+            ctx->state[2] = 0x3C6EF372;
+            ctx->state[3] = 0xA54FF53A;
+            ctx->state[4] = 0x510E527F;
+            ctx->state[5] = 0x9B05688C;
+            ctx->state[6] = 0x1F83D9AB;
+            ctx->state[7] = 0x5BE0CD19;
+        }
+        else
+        {
 #if defined(MBEDTLS_SHA224_C)
-        /* SHA-224 */
-        ctx->state[0] = 0xC1059ED8;
-        ctx->state[1] = 0x367CD507;
-        ctx->state[2] = 0x3070DD17;
-        ctx->state[3] = 0xF70E5939;
-        ctx->state[4] = 0xFFC00B31;
-        ctx->state[5] = 0x68581511;
-        ctx->state[6] = 0x64F98FA7;
-        ctx->state[7] = 0xBEFA4FA4;
+            /* SHA-224 */
+            ctx->state[0] = 0xC1059ED8;
+            ctx->state[1] = 0x367CD507;
+            ctx->state[2] = 0x3070DD17;
+            ctx->state[3] = 0xF70E5939;
+            ctx->state[4] = 0xFFC00B31;
+            ctx->state[5] = 0x68581511;
+            ctx->state[6] = 0x64F98FA7;
+            ctx->state[7] = 0xBEFA4FA4;
 #endif
+        }
     }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+#if defined(MBEDTLS_THREADING_C)
+        int ret;
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Init called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Init( &ctx->sha256_cal_handle );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if ( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Init ret:%d\r\n", tsip_ret );
+            return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+        }
+    }
+#endif /* TSIP_TLS_API_ENABLE */
 
     ctx->is224 = is224;
 
@@ -576,6 +622,9 @@ int mbedtls_sha256_update( mbedtls_sha256_context *ctx,
                                size_t ilen )
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+#endif /* TSIP_TLS_API_ENABLE */
     size_t fill;
     uint32_t left;
 
@@ -585,40 +634,69 @@ int mbedtls_sha256_update( mbedtls_sha256_context *ctx,
     if( ilen == 0 )
         return( 0 );
 
-    left = ctx->total[0] & 0x3F;
-    fill = SHA256_BLOCK_SIZE - left;
-
-    ctx->total[0] += (uint32_t) ilen;
-    ctx->total[0] &= 0xFFFFFFFF;
-
-    if( ctx->total[0] < (uint32_t) ilen )
-        ctx->total[1]++;
-
-    if( left && ilen >= fill )
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == g_tsip_endpointflg )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
     {
-        memcpy( (void *) (ctx->buffer + left), input, fill );
+        APP_ALL_PRINT( 5, "called. \r\n" );
+        left = ctx->total[0] & 0x3F;
+        fill = SHA256_BLOCK_SIZE - left;
 
-        if( ( ret = mbedtls_internal_sha256_process( ctx, ctx->buffer ) ) != 0 )
+        ctx->total[0] += (uint32_t) ilen;
+        ctx->total[0] &= 0xFFFFFFFF;
+
+        if( ctx->total[0] < (uint32_t) ilen )
+            ctx->total[1]++;
+
+        if( left && ilen >= fill )
+        {
+            memcpy( (void *) (ctx->buffer + left), input, fill );
+
+            if( ( ret = mbedtls_internal_sha256_process( ctx, ctx->buffer ) ) != 0 )
+                return( ret );
+
+            input += fill;
+            ilen  -= fill;
+            left = 0;
+        }
+
+        while( ilen >= SHA256_BLOCK_SIZE )
+        {
+            size_t processed =
+                        mbedtls_internal_sha256_process_many( ctx, input, ilen );
+            if( processed < SHA256_BLOCK_SIZE )
+                return( MBEDTLS_ERR_ERROR_GENERIC_ERROR );
+
+            input += processed;
+            ilen  -= processed;
+        }
+
+        if( ilen > 0 )
+            memcpy( (void *) (ctx->buffer + left), input, ilen );
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
             return( ret );
-
-        input += fill;
-        ilen  -= fill;
-        left = 0;
+#endif /* MBEDTLS_THREADING_C */
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Update called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Update( &ctx->sha256_cal_handle, (uint8_t *)input, ilen );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if ( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Update ret:%d\r\n", tsip_ret );
+            return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+        }
     }
-
-    while( ilen >= SHA256_BLOCK_SIZE )
-    {
-        size_t processed =
-                    mbedtls_internal_sha256_process_many( ctx, input, ilen );
-        if( processed < SHA256_BLOCK_SIZE )
-            return( MBEDTLS_ERR_ERROR_GENERIC_ERROR );
-
-        input += processed;
-        ilen  -= processed;
-    }
-
-    if( ilen > 0 )
-        memcpy( (void *) (ctx->buffer + left), input, ilen );
+#endif /* TSIP_TLS_API_ENABLE */
 
     return( 0 );
 }
@@ -630,63 +708,96 @@ int mbedtls_sha256_finish( mbedtls_sha256_context *ctx,
                                unsigned char *output )
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+    uint32_t digest_sha256_cal_length;
+#endif /* TSIP_TLS_API_ENABLE */
     uint32_t used;
     uint32_t high, low;
 
     SHA256_VALIDATE_RET( ctx != NULL );
     SHA256_VALIDATE_RET( (unsigned char *)output != NULL );
 
-    /*
-     * Add padding: 0x80 then 0x00 until 8 bytes remain for the length
-     */
-    used = ctx->total[0] & 0x3F;
-
-    ctx->buffer[used++] = 0x80;
-
-    if( used <= 56 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == g_tsip_endpointflg )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
     {
-        /* Enough room for padding + length in current block */
-        memset( ctx->buffer + used, 0, 56 - used );
-    }
-    else
-    {
-        /* We'll need an extra block */
-        memset( ctx->buffer + used, 0, SHA256_BLOCK_SIZE - used );
+        APP_ALL_PRINT( 5, "called. \r\n" );
+        /*
+         * Add padding: 0x80 then 0x00 until 8 bytes remain for the length
+         */
+        used = ctx->total[0] & 0x3F;
+
+        ctx->buffer[used++] = 0x80;
+
+        if( used <= 56 )
+        {
+            /* Enough room for padding + length in current block */
+            memset( ctx->buffer + used, 0, 56 - used );
+        }
+        else
+        {
+            /* We'll need an extra block */
+            memset( ctx->buffer + used, 0, SHA256_BLOCK_SIZE - used );
+
+            if( ( ret = mbedtls_internal_sha256_process( ctx, ctx->buffer ) ) != 0 )
+                return( ret );
+
+            memset( ctx->buffer, 0, 56 );
+        }
+
+        /*
+         * Add message length
+         */
+        high = ( ctx->total[0] >> 29 )
+             | ( ctx->total[1] <<  3 );
+        low  = ( ctx->total[0] <<  3 );
+
+        MBEDTLS_PUT_UINT32_BE( high, ctx->buffer, 56 );
+        MBEDTLS_PUT_UINT32_BE( low,  ctx->buffer, 60 );
 
         if( ( ret = mbedtls_internal_sha256_process( ctx, ctx->buffer ) ) != 0 )
             return( ret );
 
-        memset( ctx->buffer, 0, 56 );
+        /*
+         * Output final state
+         */
+        MBEDTLS_PUT_UINT32_BE( ctx->state[0], output,  0 );
+        MBEDTLS_PUT_UINT32_BE( ctx->state[1], output,  4 );
+        MBEDTLS_PUT_UINT32_BE( ctx->state[2], output,  8 );
+        MBEDTLS_PUT_UINT32_BE( ctx->state[3], output, 12 );
+        MBEDTLS_PUT_UINT32_BE( ctx->state[4], output, 16 );
+        MBEDTLS_PUT_UINT32_BE( ctx->state[5], output, 20 );
+        MBEDTLS_PUT_UINT32_BE( ctx->state[6], output, 24 );
+
+    #if defined(MBEDTLS_SHA224_C)
+        if( ctx->is224 == 0 )
+    #endif
+            MBEDTLS_PUT_UINT32_BE( ctx->state[7], output, 28 );
     }
-
-    /*
-     * Add message length
-     */
-    high = ( ctx->total[0] >> 29 )
-         | ( ctx->total[1] <<  3 );
-    low  = ( ctx->total[0] <<  3 );
-
-    MBEDTLS_PUT_UINT32_BE( high, ctx->buffer, 56 );
-    MBEDTLS_PUT_UINT32_BE( low,  ctx->buffer, 60 );
-
-    if( ( ret = mbedtls_internal_sha256_process( ctx, ctx->buffer ) ) != 0 )
-        return( ret );
-
-    /*
-     * Output final state
-     */
-    MBEDTLS_PUT_UINT32_BE( ctx->state[0], output,  0 );
-    MBEDTLS_PUT_UINT32_BE( ctx->state[1], output,  4 );
-    MBEDTLS_PUT_UINT32_BE( ctx->state[2], output,  8 );
-    MBEDTLS_PUT_UINT32_BE( ctx->state[3], output, 12 );
-    MBEDTLS_PUT_UINT32_BE( ctx->state[4], output, 16 );
-    MBEDTLS_PUT_UINT32_BE( ctx->state[5], output, 20 );
-    MBEDTLS_PUT_UINT32_BE( ctx->state[6], output, 24 );
-
-#if defined(MBEDTLS_SHA224_C)
-    if( ctx->is224 == 0 )
-#endif
-        MBEDTLS_PUT_UINT32_BE( ctx->state[7], output, 28 );
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+#if defined(MBEDTLS_THREADING_C)
+        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+        APP_ALL_PRINT( 5, "R_TSIP_Sha256Final called.\r\n" );
+        tsip_ret = R_TSIP_Sha256Final( &ctx->sha256_cal_handle, output, &digest_sha256_cal_length );
+#if defined(MBEDTLS_THREADING_C)
+        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+        if ( TSIP_SUCCESS != tsip_ret )
+        {
+            APP_ALL_PRINT( 1, "R_TSIP_Sha256Final ret:%d\r\n", tsip_ret );
+            return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+        }
+    }
+#endif /* TSIP_TLS_API_ENABLE */
 
     return( 0 );
 }

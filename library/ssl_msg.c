@@ -22,6 +22,8 @@
  *  http://www.ietf.org/rfc/rfc4346.txt
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_SSL_TLS_C)
@@ -53,6 +55,30 @@
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
 #include "mbedtls/oid.h"
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+#include "FreeRTOS.h"
+#include "task.h"
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+extern volatile uint32_t gTsipTlsProbeAesGcmEncryptTsipRecords;
+extern volatile uint32_t gTsipTlsProbeAesGcmEncryptTsipBytes;
+extern volatile uint32_t gTsipTlsProbeAesGcmDecryptTsipRecords;
+extern volatile uint32_t gTsipTlsProbeAesGcmDecryptTsipBytes;
+extern volatile uint32_t gTsipTlsProbeAesGcmEncryptSoftwareRecords;
+extern volatile uint32_t gTsipTlsProbeAesGcmEncryptSoftwareBytes;
+extern volatile uint32_t gTsipTlsProbeAesGcmDecryptSoftwareRecords;
+extern volatile uint32_t gTsipTlsProbeAesGcmDecryptSoftwareBytes;
+extern volatile uint32_t gTsipTlsProbeSessionKeyTsipCalls;
+extern volatile uint32_t gTsipTlsProbeSessionKeyTicks;
+extern volatile uint32_t gTsipTlsProbeAesGcmEncryptTicks;
+extern volatile uint32_t gTsipTlsProbeAesGcmDecryptTicks;
+extern volatile uint32_t gTsipTlsProbeSocketSendCalls;
+extern volatile uint32_t gTsipTlsProbeSocketSendBytes;
+extern volatile uint32_t gTsipTlsProbeSocketSendTicks;
+#endif /* TSIP_TLS_API_ENABLE */
 
 static uint32_t ssl_get_hs_total_len( mbedtls_ssl_context const *ssl );
 
@@ -541,12 +567,24 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
     unsigned char add_data[13 + 1 + MBEDTLS_SSL_CID_OUT_LEN_MAX ];
     size_t add_data_len;
     size_t post_avail;
-
+#if defined(TSIP_TLS_API_ENABLE)
+    mbedtls_cipher_type_t c_type;
+    e_tsip_err_t tsip_ret;
+    uint8_t enc_client_cipher_text[TSIP_SSL_IN_PAYLOAD_LEN];
+    tsip_aes_handle_t       tsip_aes_handle;
+    tsip_gcm_handle_t       tsip_gcm_handle;
+    tsip_hmac_sha_handle_t  tsip_hmac_handle;
+#endif /* TSIP_TLS_API_ENABLE */
     /* The SSL context is only used for debugging purposes! */
 #if !defined(MBEDTLS_DEBUG_C)
     ssl = NULL; /* make sure we don't use it except for debug */
     ((void) ssl);
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+    // initialize
+    memset( enc_client_cipher_text, 0, sizeof( enc_client_cipher_text ) );
+#endif /* TSIP_TLS_API_ENABLE */
 
     /* The PRNG is used for dynamic IV generation that's used
      * for CBC transformations in TLS 1.2. */
@@ -577,6 +615,13 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
     }
 
     ssl_mode = mbedtls_ssl_get_mode_from_transform( transform );
+#if defined(TSIP_TLS_API_ENABLE)
+    c_type = mbedtls_cipher_get_type( &transform->cipher_ctx_enc );
+    MBEDTLS_SSL_DEBUG_MSG( 5, ( "mbedtls_ssl_encrypt_buf ssl_mode %" MBEDTLS_PRINTF_SIZET
+                                    " c_type %" MBEDTLS_PRINTF_SIZET,
+                                    ssl_mode,
+                                    c_type ) );
+#endif /* TSIP_TLS_API_ENABLE */
 
     data = rec->buf + rec->data_offset;
     post_avail = rec->buf_len - ( rec->data_len + rec->data_offset );
@@ -702,19 +747,97 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
         if( status != PSA_SUCCESS )
             goto hmac_failed_etm_disabled;
 #else
-        ret = mbedtls_md_hmac_update( &transform->md_ctx_enc, add_data,
-                                      add_data_len );
-        if( ret != 0 )
-            goto hmac_failed_etm_disabled;
-        ret = mbedtls_md_hmac_update( &transform->md_ctx_enc, data, rec->data_len );
-        if( ret != 0 )
-            goto hmac_failed_etm_disabled;
-        ret = mbedtls_md_hmac_finish( &transform->md_ctx_enc, mac );
-        if( ret != 0 )
-            goto hmac_failed_etm_disabled;
-        ret = mbedtls_md_hmac_reset( &transform->md_ctx_enc );
-        if( ret != 0 )
-            goto hmac_failed_etm_disabled;
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+            ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+        {
+            if( ssl->disable_tsip_tls_accel != 0U )
+            {
+                MBEDTLS_SSL_DEBUG_MSG( 2, ( "using software record hmac fallback" ) );
+            }
+            ret = mbedtls_md_hmac_update( &transform->md_ctx_enc, add_data,
+                                          add_data_len );
+            if( ret != 0 )
+                goto hmac_failed_etm_disabled;
+            ret = mbedtls_md_hmac_update( &transform->md_ctx_enc, data, rec->data_len );
+            if( ret != 0 )
+                goto hmac_failed_etm_disabled;
+            ret = mbedtls_md_hmac_finish( &transform->md_ctx_enc, mac );
+            if( ret != 0 )
+                goto hmac_failed_etm_disabled;
+            ret = mbedtls_md_hmac_reset( &transform->md_ctx_enc );
+            if( ret != 0 )
+                goto hmac_failed_etm_disabled;
+        }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            ret = 0;
+
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacGenerateInit called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            tsip_ret = R_TSIP_Sha256HmacGenerateInit(
+                                        &tsip_hmac_handle,
+                                        &ssl->tsip_clientmackey );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacGenerateInit ret:%d\r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacGenerateUpdate called.\r\n" );
+            tsip_ret = R_TSIP_Sha256HmacGenerateUpdate(
+                                        &tsip_hmac_handle,
+                                        add_data,
+                                        add_data_len );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacGenerateUpdate ret:%d\r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacGenerateUpdate called.\r\n" );
+            tsip_ret = R_TSIP_Sha256HmacGenerateUpdate(
+                                        &tsip_hmac_handle,
+                                        data,
+                                        rec->data_len );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacGenerateUpdate ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacGenerateFinal called.\r\n" );
+            tsip_ret = R_TSIP_Sha256HmacGenerateFinal(
+                                        &tsip_hmac_handle,
+                                        mac );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacGenerateFinal ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
 
         memcpy( data + rec->data_len, mac, transform->maclen );
@@ -773,6 +896,11 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
         psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
         int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+        size_t plain_data_len = rec->data_len;
+#if defined(TSIP_TLS_API_ENABLE)
+        uint32_t    gcm_len;
+        size_t      olen;
+#endif /* TSIP_TLS_API_ENABLE */
 
         /* Check that there's space for the authentication tag. */
         if( post_avail < transform->taglen )
@@ -796,11 +924,64 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
         dynamic_iv     = rec->ctr;
         dynamic_iv_len = sizeof( rec->ctr );
 
-        ssl_build_record_nonce( iv, sizeof( iv ),
-                                transform->iv_enc,
-                                transform->fixed_ivlen,
-                                dynamic_iv,
-                                dynamic_iv_len );
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+            ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+        {
+            ssl_build_record_nonce( iv, sizeof( iv ),
+                                    transform->iv_enc,
+                                    transform->fixed_ivlen,
+                                    dynamic_iv,
+                                    dynamic_iv_len );
+        }
+#endif /* MBEDTLS_FUNC_ENABLE */
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_CLIENT == ssl->conf->endpoint )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            if( transform->ivlen == 12 &&
+                transform->fixed_ivlen == 4 &&
+                ssl->tsip_cipher_suite != 0 &&
+                ssl->disable_tsip_tls_accel == 0U )
+            {
+                APP_ALL_PRINT( 5, "R_TSIP_TlsGenerateSessionKey called.\r\n" );
+                TickType_t xProbeStart = xTaskGetTickCount();
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                unsigned char dummy_client_iv[16];
+                unsigned char dummy_server_iv[16];
+                tsip_ret = R_TSIP_TlsGenerateSessionKey(
+                                    ssl->tsip_cipher_suite,
+                                    &ssl->tsip_master_secret[0],
+                                    &ssl->client_server_random_value[0],
+                                    &ssl->client_server_random_value[32],
+                                    dynamic_iv,
+                                    &ssl->tsip_clientmackey,
+                                    &ssl->tsip_servermackey,
+                                    &ssl->tsip_clientcommonkey,
+                                    &ssl->tsip_servercommonkey,
+                                    &dummy_client_iv[0],
+                                    &dummy_server_iv[0] );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                gTsipTlsProbeSessionKeyTicks +=
+                    (uint32_t)( xTaskGetTickCount() - xProbeStart );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_TlsGenerateSessionKey ret:%d\r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+                gTsipTlsProbeSessionKeyTsipCalls++;
+            }
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 
         /*
          * Build additional data for AEAD encryption.
@@ -840,17 +1021,105 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
             return( ret );
         }
 #else
-        if( ( ret = mbedtls_cipher_auth_encrypt_ext( &transform->cipher_ctx_enc,
-                   iv, transform->ivlen,
-                   add_data, add_data_len,
-                   data, rec->data_len,                     /* src */
-                   data, rec->buf_len - (data - rec->buf),  /* dst */
-                   &rec->data_len,
-                   transform->taglen ) ) != 0 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+            ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
         {
-            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_encrypt_ext", ret );
-            return( ret );
+            if( ssl->disable_tsip_tls_accel != 0U )
+            {
+                MBEDTLS_SSL_DEBUG_MSG( 2, ( "using software record encrypt fallback" ) );
+            }
+            if( ( ret = mbedtls_cipher_auth_encrypt_ext( &transform->cipher_ctx_enc,
+                       iv, transform->ivlen,
+                       add_data, add_data_len,
+                       data, rec->data_len,                     /* src */
+                       data, rec->buf_len - (data - rec->buf),  /* dst */
+                       &rec->data_len,
+                       transform->taglen ) ) != 0 )
+            {
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_encrypt_ext", ret );
+                return( ret );
+            }
+#if defined(TSIP_TLS_API_ENABLE)
+            gTsipTlsProbeAesGcmEncryptSoftwareRecords++;
+            gTsipTlsProbeAesGcmEncryptSoftwareBytes += (uint32_t) plain_data_len;
+#endif /* TSIP_TLS_API_ENABLE */
         }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            ret = 0;
+            APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmEncryptInit called.\r\n" );
+            TickType_t xProbeStart = xTaskGetTickCount();
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            tsip_ret = R_TSIP_Aes128GcmEncryptInit(
+                                        &tsip_gcm_handle,
+                                        &ssl->tsip_clientcommonkey,
+                                        NULL,
+                                        0 );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmEncryptInit ret:%d \r\n", tsip_ret );
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_encrypt", ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            // calculate gcm length in 16 bytes boundary
+            gcm_len = ( rec->data_len / 16) * 16;
+
+            APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmEncryptUpdate called.\r\n" );
+            tsip_ret = R_TSIP_Aes128GcmEncryptUpdate(
+                                        &tsip_gcm_handle,
+                                        data,
+                                        &enc_client_cipher_text[0],
+                                        rec->data_len,
+                                        add_data,
+                                        add_data_len );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmEncryptUpdate ret:%d \r\n", tsip_ret );
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_encrypt", ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmEncryptFinal called.\r\n" );
+            tsip_ret = R_TSIP_Aes128GcmEncryptFinal(
+                                        &tsip_gcm_handle,
+                                        &enc_client_cipher_text[gcm_len],
+                                        &olen,
+                                        data + rec->data_len );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            gTsipTlsProbeAesGcmEncryptTicks +=
+                (uint32_t)( xTaskGetTickCount() - xProbeStart );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmEncryptFinal ret:%d \r\n", tsip_ret );
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_encrypt", ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            memcpy( data, &enc_client_cipher_text[0], olen );
+            rec->data_len += transform->taglen;
+            gTsipTlsProbeAesGcmEncryptTsipRecords++;
+            gTsipTlsProbeAesGcmEncryptTsipBytes += (uint32_t) plain_data_len;
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
 
         MBEDTLS_SSL_DEBUG_BUF( 4, "after encrypt: tag",
@@ -990,23 +1259,158 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
         }
 
         olen += part_len;
-#else
-        if( ( ret = mbedtls_cipher_crypt( &transform->cipher_ctx_enc,
-                                   transform->iv_enc,
-                                   transform->ivlen,
-                                   data, rec->data_len,
-                                   data, &olen ) ) != 0 )
-        {
-            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_crypt", ret );
-            return( ret );
-        }
-#endif /* MBEDTLS_USE_PSA_CRYPTO */
 
         if( rec->data_len != olen )
         {
             MBEDTLS_SSL_DEBUG_MSG( 1, ( "should never happen" ) );
             return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
         }
+
+#else
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+            ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+        {
+            if( ( ret = mbedtls_cipher_crypt( &transform->cipher_ctx_enc,
+                                       transform->iv_enc,
+                                       transform->ivlen,
+                                       data, rec->data_len,
+                                       data, &olen ) ) != 0 )
+            {
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_crypt", ret );
+                return( ret );
+            }
+
+            if( rec->data_len != olen )
+            {
+                MBEDTLS_SSL_DEBUG_MSG( 1, ( "should never happen" ) );
+                return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
+            }
+        }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            if( c_type == MBEDTLS_CIPHER_AES_128_CBC )
+            {
+                APP_ALL_PRINT( 5, "R_TSIP_Aes128CbcEncryptInit called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                // IV is NULL
+                tsip_ret = R_TSIP_Aes128CbcEncryptInit(
+                                            &tsip_aes_handle,
+                                            &ssl->tsip_clientcommonkey,
+                                            transform->iv_enc );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes128CbcEncryptInit ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                APP_ALL_PRINT( 5, "R_TSIP_Aes128CbcEncryptUpdate called.\r\n" );
+                tsip_ret = R_TSIP_Aes128CbcEncryptUpdate(
+                                            &tsip_aes_handle,
+                                            data,
+                                            &enc_client_cipher_text[0],
+                                            rec->data_len );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes128CbcEncryptUpdate ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                uint32_t dummylen;
+                APP_ALL_PRINT( 5, "R_TSIP_Aes128CbcEncryptFinal called.\r\n" );
+                tsip_ret = R_TSIP_Aes128CbcEncryptFinal(
+                                            &tsip_aes_handle,
+                                            NULL,
+                                            &dummylen );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes128CbcEncryptFinal ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+            }
+            else if( c_type == MBEDTLS_CIPHER_AES_256_CBC )
+            {
+                APP_ALL_PRINT( 5, "R_TSIP_Aes256CbcEncryptInit called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                // IV is NULL
+                tsip_ret = R_TSIP_Aes256CbcEncryptInit(
+                                            &tsip_aes_handle,
+                                            &ssl->tsip_clientcommonkey,
+                                            transform->iv_enc );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes256CbcEncryptInit ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                APP_ALL_PRINT( 5, "R_TSIP_Aes256CbcEncryptUpdate called.\r\n" );
+                tsip_ret = R_TSIP_Aes256CbcEncryptUpdate(
+                                            &tsip_aes_handle,
+                                            data,
+                                            &enc_client_cipher_text[0],
+                                            rec->data_len );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes256CbcEncryptUpdate ret:%d datalen:%d \r\n",
+                                     tsip_ret,
+                                     rec->data_len + transform->ivlen );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                uint32_t dummylen;
+                APP_ALL_PRINT( 5, "R_TSIP_Aes256CbcEncryptFinal called.\r\n" );
+                tsip_ret = R_TSIP_Aes256CbcEncryptFinal(
+                                            &tsip_aes_handle,
+                                            NULL,
+                                            &dummylen );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes256CbcEncryptFinal ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+            }
+            else
+            {
+                MBEDTLS_SSL_DEBUG_MSG( 1, ( "Invalid cipher suite is selected") );
+                while(1);
+            }
+
+            memcpy( data,
+                    &enc_client_cipher_text,
+                    rec->data_len );
+        }
+#endif /* TSIP_TLS_API_ENABLE */
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
 
         data             -= transform->ivlen;
         rec->data_offset -= transform->ivlen;
@@ -1062,21 +1466,91 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
             if( status != PSA_SUCCESS )
                 goto hmac_failed_etm_enabled;
 #else
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+            if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+            {
+                ret = mbedtls_md_hmac_update( &transform->md_ctx_enc, add_data,
+                                              add_data_len );
+                if( ret != 0 )
+                    goto hmac_failed_etm_enabled;
+                ret = mbedtls_md_hmac_update( &transform->md_ctx_enc,
+                                              data, rec->data_len );
+                if( ret != 0 )
+                    goto hmac_failed_etm_enabled;
+                ret = mbedtls_md_hmac_finish( &transform->md_ctx_enc, mac );
+                if( ret != 0 )
+                    goto hmac_failed_etm_enabled;
+                ret = mbedtls_md_hmac_reset( &transform->md_ctx_enc );
+                if( ret != 0 )
+                    goto hmac_failed_etm_enabled;
+            }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+            else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+            {
+                APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacGenerateInit called.\\n" );
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                tsip_ret = R_TSIP_Sha256HmacGenerateInit(
+                                            &tsip_hmac_handle,
+                                            &ssl->tsip_clientmackey );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacGenerateInit ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
 
-            ret = mbedtls_md_hmac_update( &transform->md_ctx_enc, add_data,
-                                          add_data_len );
-            if( ret != 0 )
-                goto hmac_failed_etm_enabled;
-            ret = mbedtls_md_hmac_update( &transform->md_ctx_enc,
-                                          data, rec->data_len );
-            if( ret != 0 )
-                goto hmac_failed_etm_enabled;
-            ret = mbedtls_md_hmac_finish( &transform->md_ctx_enc, mac );
-            if( ret != 0 )
-                goto hmac_failed_etm_enabled;
-            ret = mbedtls_md_hmac_reset( &transform->md_ctx_enc );
-            if( ret != 0 )
-                goto hmac_failed_etm_enabled;
+                APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacGenerateUpdate called.\r\n" );
+                tsip_ret = R_TSIP_Sha256HmacGenerateUpdate(
+                                            &tsip_hmac_handle,
+                                            add_data,
+                                            add_data_len );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacGenerateUpdate ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacGenerateUpdate called.\r\n" );
+                tsip_ret = R_TSIP_Sha256HmacGenerateUpdate(
+                                            &tsip_hmac_handle,
+                                            data,
+                                            rec->data_len );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacGenerateUpdate ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacGenerateFinal called.\r\n" );
+                tsip_ret = R_TSIP_Sha256HmacGenerateFinal(
+                                            &tsip_hmac_handle,
+                                            mac );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacGenerateFinal ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+            }
+#endif /* TSIP_TLS_API_ENABLE */
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
 
             memcpy( data + rec->data_len, mac, transform->maclen );
@@ -1120,14 +1594,20 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
     return( 0 );
 }
 
-int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
+int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
                              mbedtls_ssl_transform *transform,
                              mbedtls_record *rec )
 {
     size_t olen;
     mbedtls_ssl_mode_t ssl_mode;
-    int ret;
-
+    int ret = 0;
+#if defined(TSIP_TLS_API_ENABLE)
+    mbedtls_cipher_type_t c_type;
+    uint8_t dec_client_plain_text[TSIP_SSL_OUT_PAYLOAD_LEN];
+    tsip_aes_handle_t       tsip_aes_handle;
+    tsip_gcm_handle_t       tsip_gcm_handle;
+    tsip_hmac_sha_handle_t  tsip_hmac_handle;
+#endif /* TSIP_TLS_API_ENABLE */
     int auth_done = 0;
 #if defined(MBEDTLS_SSL_SOME_SUITES_USE_MAC)
     size_t padlen = 0, correct = 1;
@@ -1141,6 +1621,11 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
     ((void) ssl);
 #endif
 
+#if defined(TSIP_TLS_API_ENABLE)
+    // initialize
+    memset( dec_client_plain_text, 0, sizeof( dec_client_plain_text ) );
+#endif /* TSIP_TLS_API_ENABLE */
+
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> decrypt buf" ) );
     if( rec == NULL                     ||
         rec->buf == NULL                ||
@@ -1153,6 +1638,13 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
 
     data = rec->buf + rec->data_offset;
     ssl_mode = mbedtls_ssl_get_mode_from_transform( transform );
+#if defined(TSIP_TLS_API_ENABLE)
+    c_type = mbedtls_cipher_get_type( &transform->cipher_ctx_enc );
+    MBEDTLS_SSL_DEBUG_MSG( 5, ( "mbedtls_ssl_decrypt_buf ssl_mode %" MBEDTLS_PRINTF_SIZET
+                                    " c_type %" MBEDTLS_PRINTF_SIZET,
+                                    ssl_mode,
+                                    c_type ) );
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     /*
@@ -1184,6 +1676,9 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
         psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
+#if defined(TSIP_TLS_API_ENABLE)
+        uint32_t gcm_len;
+#endif /* TSIP_TLS_API_ENABLE */
 
         /*
          * Extract dynamic part of nonce for AEAD decryption.
@@ -1226,14 +1721,68 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
         }
         rec->data_len -= transform->taglen;
 
-        /*
-         * Prepare nonce from dynamic and static parts.
-         */
-        ssl_build_record_nonce( iv, sizeof( iv ),
-                                transform->iv_dec,
-                                transform->fixed_ivlen,
-                                dynamic_iv,
-                                dynamic_iv_len );
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+            ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+        {
+            /*
+             * Prepare nonce from dynamic and static parts.
+             */
+            ssl_build_record_nonce( iv, sizeof( iv ),
+                                    transform->iv_dec,
+                                    transform->fixed_ivlen,
+                                    dynamic_iv,
+                                    dynamic_iv_len );
+        }
+#endif /* MBEDTLS_FUNC_ENABLE */
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_CLIENT == ssl->conf->endpoint )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            if( transform->ivlen == 12 &&
+                transform->fixed_ivlen == 4 &&
+                ssl->tsip_cipher_suite != 0 &&
+                ssl->disable_tsip_tls_accel == 0U )
+            {
+                e_tsip_err_t tsip_ret;
+                APP_ALL_PRINT( 5, "R_TSIP_TlsGenerateSessionKey called.\r\n" );
+                TickType_t xProbeStart = xTaskGetTickCount();
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                unsigned char dummy_client_iv[16];
+                unsigned char dummy_server_iv[16];
+                tsip_ret = R_TSIP_TlsGenerateSessionKey(
+                                        ssl->tsip_cipher_suite,
+                                        &ssl->tsip_master_secret[0],
+                                        &ssl->client_server_random_value[0],
+                                        &ssl->client_server_random_value[32],
+                                        dynamic_iv,
+                                        &ssl->tsip_clientmackey,
+                                        &ssl->tsip_servermackey,
+                                        &ssl->tsip_clientcommonkey,
+                                        &ssl->tsip_servercommonkey,
+                                        &dummy_client_iv[0],
+                                        &dummy_server_iv[0] );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                gTsipTlsProbeSessionKeyTicks +=
+                    (uint32_t)( xTaskGetTickCount() - xProbeStart );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_TlsGenerateSessionKey ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+                gTsipTlsProbeSessionKeyTsipCalls++;
+            }
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 
         /*
          * Build additional data for AEAD encryption.
@@ -1274,20 +1823,103 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
             return( ret );
         }
 #else
-        if( ( ret = mbedtls_cipher_auth_decrypt_ext( &transform->cipher_ctx_dec,
-                  iv, transform->ivlen,
-                  add_data, add_data_len,
-                  data, rec->data_len + transform->taglen,          /* src */
-                  data, rec->buf_len - (data - rec->buf), &olen,    /* dst */
-                  transform->taglen ) ) != 0 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+            ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
         {
-            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_decrypt_ext", ret );
+            if( ( ret = mbedtls_cipher_auth_decrypt_ext( &transform->cipher_ctx_dec,
+                      iv, transform->ivlen,
+                      add_data, add_data_len,
+                      data, rec->data_len + transform->taglen,          /* src */
+                      data, rec->buf_len - (data - rec->buf), &olen,    /* dst */
+                      transform->taglen ) ) != 0 )
+            {
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_decrypt_ext", ret );
 
-            if( ret == MBEDTLS_ERR_CIPHER_AUTH_FAILED )
-                return( MBEDTLS_ERR_SSL_INVALID_MAC );
+                if( ret == MBEDTLS_ERR_CIPHER_AUTH_FAILED )
+                    return( MBEDTLS_ERR_SSL_INVALID_MAC );
 
-            return( ret );
+                return( ret );
+            }
+#if defined(TSIP_TLS_API_ENABLE)
+            gTsipTlsProbeAesGcmDecryptSoftwareRecords++;
+            gTsipTlsProbeAesGcmDecryptSoftwareBytes += (uint32_t) rec->data_len;
+#endif /* TSIP_TLS_API_ENABLE */
         }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            e_tsip_err_t tsip_ret;
+
+            APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmDecryptInit called.\r\n" );
+            TickType_t xProbeStart = xTaskGetTickCount();
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            tsip_ret = R_TSIP_Aes128GcmDecryptInit(
+                                        &tsip_gcm_handle,
+                                        &ssl->tsip_servercommonkey,
+                                        NULL,
+                                        0 );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmDecryptInit ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            // calculate gcm length in 16 bytes boundary
+            gcm_len = (rec->data_len / 16) * 16;
+
+            APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmDecryptUpdate called.\r\n" );
+            tsip_ret = R_TSIP_Aes128GcmDecryptUpdate(
+                                        &tsip_gcm_handle,
+                                        data,
+                                        &dec_client_plain_text[0],
+                                        (uint32_t) rec->data_len,
+                                        add_data,
+                                        add_data_len );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmDecryptUpdate ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmDecryptFinal called.\r\n" );
+            tsip_ret = R_TSIP_Aes128GcmDecryptFinal(
+                                        &tsip_gcm_handle,
+                                        &dec_client_plain_text[gcm_len],
+                                        &olen,
+                                        data + rec->data_len,
+                (uint32_t) transform->taglen );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            gTsipTlsProbeAesGcmDecryptTicks +=
+                (uint32_t)( xTaskGetTickCount() - xProbeStart );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmDecryptFinal ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+            memcpy( data, &dec_client_plain_text[0],  olen );
+
+            ret = tsip_ret;
+            gTsipTlsProbeAesGcmDecryptTsipRecords++;
+            gTsipTlsProbeAesGcmDecryptTsipBytes += (uint32_t) rec->data_len;
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
 
         auth_done++;
@@ -1405,52 +2037,139 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
             if( status != PSA_SUCCESS )
                 goto hmac_failed_etm_enabled;
 #else
-            ret = mbedtls_md_hmac_update( &transform->md_ctx_dec, add_data,
-                                          add_data_len );
-            if( ret != 0 )
-                goto hmac_failed_etm_enabled;
-            ret = mbedtls_md_hmac_update( &transform->md_ctx_dec,
-                                    data, rec->data_len );
-            if( ret != 0 )
-                goto hmac_failed_etm_enabled;
-            ret = mbedtls_md_hmac_finish( &transform->md_ctx_dec, mac_expect );
-            if( ret != 0 )
-                goto hmac_failed_etm_enabled;
-            ret = mbedtls_md_hmac_reset( &transform->md_ctx_dec );
-            if( ret != 0 )
-                goto hmac_failed_etm_enabled;
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+            if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+            {
+                ret = mbedtls_md_hmac_update( &transform->md_ctx_dec, add_data,
+                                              add_data_len );
+                if( ret != 0 )
+                    goto hmac_failed_etm_enabled;
+                ret = mbedtls_md_hmac_update( &transform->md_ctx_dec,
+                                        data, rec->data_len );
+                if( ret != 0 )
+                    goto hmac_failed_etm_enabled;
+                ret = mbedtls_md_hmac_finish( &transform->md_ctx_dec, mac_expect );
+                if( ret != 0 )
+                    goto hmac_failed_etm_enabled;
+                ret = mbedtls_md_hmac_reset( &transform->md_ctx_dec );
+                if( ret != 0 )
+                    goto hmac_failed_etm_enabled;
+            }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+            else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+            {
+                e_tsip_err_t tsip_ret;
+                APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacVerifyInit called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                tsip_ret = R_TSIP_Sha256HmacVerifyInit(
+                                            &tsip_hmac_handle,
+                                            &ssl->tsip_servermackey );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacVerifyInit ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
 
+                APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacVerifyUpdate called.\r\n" );
+                tsip_ret = R_TSIP_Sha256HmacVerifyUpdate(
+                                            &tsip_hmac_handle,
+                                            add_data,
+                                            add_data_len );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacVerifyUpdate ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacVerifyUpdate called.\r\n" );
+                tsip_ret = R_TSIP_Sha256HmacVerifyUpdate(
+                                            &tsip_hmac_handle,
+                                            data,
+                                            rec->data_len );
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacVerifyUpdate ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacVerifyFinal called.\r\n" );
+                tsip_ret = R_TSIP_Sha256HmacVerifyFinal(
+                                            &tsip_hmac_handle,
+                                            data + rec->data_len,
+                                            transform->maclen );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacVerifyFinal ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+            }
+#endif /* TSIP_TLS_API_ENABLE */
             MBEDTLS_SSL_DEBUG_BUF( 4, "message  mac", data + rec->data_len,
                                    transform->maclen );
-            MBEDTLS_SSL_DEBUG_BUF( 4, "expected mac", mac_expect,
-                                   transform->maclen );
-
-            /* Compare expected MAC with MAC at the end of the record. */
-            if( mbedtls_ct_memcmp( data + rec->data_len, mac_expect,
-                                              transform->maclen ) != 0 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+            if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
             {
-                MBEDTLS_SSL_DEBUG_MSG( 1, ( "message mac does not match" ) );
-                ret = MBEDTLS_ERR_SSL_INVALID_MAC;
-                goto hmac_failed_etm_enabled;
+                MBEDTLS_SSL_DEBUG_BUF( 4, "expected mac", mac_expect,
+                                       transform->maclen );
+
+                /* Compare expected MAC with MAC at the end of the record. */
+                if( mbedtls_ct_memcmp( data + rec->data_len, mac_expect,
+                                                  transform->maclen ) != 0 )
+                {
+                    MBEDTLS_SSL_DEBUG_MSG( 1, ( "message mac does not match" ) );
+                    ret = MBEDTLS_ERR_SSL_INVALID_MAC;
+                    goto hmac_failed_etm_enabled;
+                }
             }
+#endif /* MBEDTLS_FUNC_ENABLE */
+
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
             auth_done++;
 
         hmac_failed_etm_enabled:
-#if defined(MBEDTLS_USE_PSA_CRYPTO)
-            ret = psa_ssl_status_to_mbedtls( status );
-            status = psa_mac_abort( &operation );
-            if( ret == 0 && status != PSA_SUCCESS )
-                ret = psa_ssl_status_to_mbedtls( status );
-#else
-            mbedtls_platform_zeroize( mac_expect, transform->maclen );
-#endif /* MBEDTLS_USE_PSA_CRYPTO */
-            if( ret != 0 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+            if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
             {
-                if( ret != MBEDTLS_ERR_SSL_INVALID_MAC )
-                    MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_hmac_xxx", ret );
-                return( ret );
+#if defined(MBEDTLS_USE_PSA_CRYPTO)
+                ret = psa_ssl_status_to_mbedtls( status );
+                status = psa_mac_abort( &operation );
+                if( ret == 0 && status != PSA_SUCCESS )
+                    ret = psa_ssl_status_to_mbedtls( status );
+#else
+                mbedtls_platform_zeroize( mac_expect, transform->maclen );
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
+                if( ret != 0 )
+                {
+                    if( ret != MBEDTLS_ERR_SSL_INVALID_MAC )
+                        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_hmac_xxx", ret );
+                    return( ret );
+               }
             }
+#endif /* MBEDTLS_FUNC_ENABLE */
         }
 #endif /* MBEDTLS_SSL_ENCRYPT_THEN_MAC */
 
@@ -1526,16 +2245,6 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
         }
 
         olen += part_len;
-#else
-
-        if( ( ret = mbedtls_cipher_crypt( &transform->cipher_ctx_dec,
-                                   transform->iv_dec, transform->ivlen,
-                                   data, rec->data_len, data, &olen ) ) != 0 )
-        {
-            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_crypt", ret );
-            return( ret );
-        }
-#endif /* MBEDTLS_USE_PSA_CRYPTO */
 
         /* Double-check that length hasn't changed during decryption. */
         if( rec->data_len != olen )
@@ -1543,6 +2252,152 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
             MBEDTLS_SSL_DEBUG_MSG( 1, ( "should never happen" ) );
             return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
         }
+#else
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint ||
+            ssl->disable_tsip_tls_accel != 0U )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+        {
+            if( ( ret = mbedtls_cipher_crypt( &transform->cipher_ctx_dec,
+                                       transform->iv_dec, transform->ivlen,
+                                       data, rec->data_len, data, &olen ) ) != 0 )
+            {
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_crypt", ret );
+                return( ret );
+            }
+
+            /* Double-check that length hasn't changed during decryption. */
+            if( rec->data_len != olen )
+            {
+                MBEDTLS_SSL_DEBUG_MSG( 1, ( "should never happen" ) );
+                return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
+            }
+        }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            e_tsip_err_t tsip_ret;
+
+            if( c_type == MBEDTLS_CIPHER_AES_128_CBC )
+            {
+                // IV is NULL
+                APP_ALL_PRINT( 5, "R_TSIP_Aes128CbcDecryptInit called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                tsip_ret = R_TSIP_Aes128CbcDecryptInit(
+                                            &tsip_aes_handle,
+                                            &ssl->tsip_servercommonkey,
+                                            transform->iv_dec );
+                if( tsip_ret != TSIP_SUCCESS )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes128CbcDecryptInit ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                APP_ALL_PRINT( 5, "R_TSIP_Aes128CbcDecryptUpdate called.\r\n" );
+                tsip_ret = R_TSIP_Aes128CbcDecryptUpdate(
+                                            &tsip_aes_handle,
+                                            data,
+                                            &dec_client_plain_text[0],
+                                            rec->data_len );
+                if( tsip_ret != TSIP_SUCCESS )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes128CbcDecryptUpdate ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                uint32_t dummylen;
+                APP_ALL_PRINT( 5, "R_TSIP_Aes128CbcDecryptFinal called.\r\n" );
+                tsip_ret = R_TSIP_Aes128CbcDecryptFinal(
+                                            &tsip_aes_handle,
+                                            NULL,
+                                            &dummylen );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                if( tsip_ret != TSIP_SUCCESS )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes128CbcDecryptFinal ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+            }
+            else if( c_type == MBEDTLS_CIPHER_AES_256_CBC )
+            {
+                // IV is NULL
+                APP_ALL_PRINT( 5, "R_TSIP_Aes256CbcDecryptInit called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                tsip_ret = R_TSIP_Aes256CbcDecryptInit(
+                                            &tsip_aes_handle,
+                                            &ssl->tsip_servercommonkey,
+                                            transform->iv_dec );
+                if( tsip_ret != TSIP_SUCCESS )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes256CbcDecryptInit ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                APP_ALL_PRINT( 5, "R_TSIP_Aes256CbcDecryptUpdate called.\r\n" );
+                tsip_ret = R_TSIP_Aes256CbcDecryptUpdate(
+                                            &tsip_aes_handle,
+                                            data,
+                                            &dec_client_plain_text[0],
+                                            rec->data_len );
+                if( tsip_ret != TSIP_SUCCESS )
+                {
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes256CbcDecryptUpdate ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+
+                uint32_t dummylen;
+                APP_ALL_PRINT( 5, "R_TSIP_Aes256CbcDecryptFinal called.\r\n" );
+                tsip_ret = R_TSIP_Aes256CbcDecryptFinal(
+                                            &tsip_aes_handle,
+                                            NULL,
+                                            &dummylen );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                if( tsip_ret != TSIP_SUCCESS )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_Aes256CbcDecryptFinal ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+                }
+            }
+            else
+            {
+                MBEDTLS_SSL_DEBUG_MSG( 1, ( "Invalid cipher suite is selected") );
+                return( MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE );
+            }
+
+            // write decrypted message
+            memcpy( data, &dec_client_plain_text[0], rec->data_len );
+
+        } // Client or Server
+#endif /* TSIP_TLS_API_ENABLE */
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
+
+
 
         /* Safe since data_len >= minlen + maclen + 1, so after having
          * subtracted at most minlen and maclen up to this point,
@@ -1681,43 +2536,132 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
         const size_t max_len = rec->data_len + padlen;
         const size_t min_len = ( max_len > 256 ) ? max_len - 256 : 0;
 
+        mbedtls_ct_memcpy_offset( mac_peer, data,
+                                  rec->data_len,
+                                  min_len, max_len,
+                                  transform->maclen );
+
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
         ret = mbedtls_ct_hmac( transform->psa_mac_dec,
                                transform->psa_mac_alg,
                                add_data, add_data_len,
                                data, rec->data_len, min_len, max_len,
                                mac_expect );
-#else
-        ret = mbedtls_ct_hmac( &transform->md_ctx_dec,
-                               add_data, add_data_len,
-                               data, rec->data_len, min_len, max_len,
-                               mac_expect );
-#endif /* MBEDTLS_USE_PSA_CRYPTO */
         if( ret != 0 )
         {
             MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ct_hmac", ret );
             goto hmac_failed_etm_disabled;
         }
+#else
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
+        {
+            ret = mbedtls_ct_hmac( &transform->md_ctx_dec,
+                                   add_data, add_data_len,
+                                   data, rec->data_len, min_len, max_len,
+                                   mac_expect );
+            if( ret != 0 )
+            {
+                MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ct_hmac", ret );
+                goto hmac_failed_etm_disabled;
+            }
+        }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+        {
+            e_tsip_err_t tsip_ret;
 
-        mbedtls_ct_memcpy_offset( mac_peer, data,
-                                  rec->data_len,
-                                  min_len, max_len,
-                                  transform->maclen );
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacVerifyInit called.\r\n" );
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif /* MBEDTLS_THREADING_C */
+            tsip_ret = R_TSIP_Sha256HmacVerifyInit(
+                                        &tsip_hmac_handle,
+                                        &ssl->tsip_servermackey );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacVerifyInit ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacVerifyUpdate called.\r\n" );
+            tsip_ret = R_TSIP_Sha256HmacVerifyUpdate(
+                                        &tsip_hmac_handle,
+                                        add_data,
+                                        add_data_len );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacVerifyUpdate ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacVerifyUpdate called.\r\n" );
+            tsip_ret = R_TSIP_Sha256HmacVerifyUpdate(
+                                        &tsip_hmac_handle,
+                                        data,
+                                        rec->data_len );
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacVerifyUpdate ret:%d \r\n", tsip_ret );
+                return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            APP_ALL_PRINT( 5, "R_TSIP_Sha256HmacVerifyFinal called.\r\n" );
+            tsip_ret = R_TSIP_Sha256HmacVerifyFinal(
+                                        &tsip_hmac_handle,
+                                        mac_peer,
+                                        transform->maclen );
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            if( TSIP_SUCCESS != tsip_ret )
+            {
+                APP_ALL_PRINT( 1, "R_TSIP_Sha256HmacVerifyFinal ret:%d \r\n", tsip_ret );
+#if defined(MBEDTLS_SSL_DEBUG_ALL)
+                        MBEDTLS_SSL_DEBUG_MSG( 1, ( "message mac does not match" ) );
+#endif
+                correct = 0;
+                return( MBEDTLS_ERR_SSL_INVALID_MAC );
+            }
+        }
+#endif /* TSIP_TLS_API_ENABLE */
+#endif /* MBEDTLS_USE_PSA_CRYPTO */
 #endif /* MBEDTLS_SSL_PROTO_TLS1_2 */
 
 #if defined(MBEDTLS_SSL_DEBUG_ALL)
         MBEDTLS_SSL_DEBUG_BUF( 4, "expected mac", mac_expect, transform->maclen );
         MBEDTLS_SSL_DEBUG_BUF( 4, "message  mac", mac_peer, transform->maclen );
 #endif
-
-        if( mbedtls_ct_memcmp( mac_peer, mac_expect,
-                                          transform->maclen ) != 0 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+        if( MBEDTLS_SSL_IS_SERVER == ssl->conf->endpoint )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
         {
+            if( mbedtls_ct_memcmp( mac_peer, mac_expect,
+                                              transform->maclen ) != 0 )
+            {
 #if defined(MBEDTLS_SSL_DEBUG_ALL)
-            MBEDTLS_SSL_DEBUG_MSG( 1, ( "message mac does not match" ) );
+                MBEDTLS_SSL_DEBUG_MSG( 1, ( "message mac does not match" ) );
 #endif
-            correct = 0;
+                correct = 0;
+            }
         }
+#endif /* MBEDTLS_FUNC_ENABLE */
         auth_done++;
 
     hmac_failed_etm_disabled:
@@ -2036,7 +2980,19 @@ int mbedtls_ssl_flush_output( mbedtls_ssl_context *ssl )
                        mbedtls_ssl_out_hdr_len( ssl ) + ssl->out_msglen, ssl->out_left ) );
 
         buf = ssl->out_hdr - ssl->out_left;
+#if defined(TSIP_TLS_API_ENABLE)
+        TickType_t xProbeStart = xTaskGetTickCount();
+#endif /* TSIP_TLS_API_ENABLE */
         ret = ssl->f_send( ssl->p_bio, buf, ssl->out_left );
+#if defined(TSIP_TLS_API_ENABLE)
+        gTsipTlsProbeSocketSendTicks +=
+            (uint32_t)( xTaskGetTickCount() - xProbeStart );
+        if( ret > 0 )
+        {
+            gTsipTlsProbeSocketSendCalls++;
+            gTsipTlsProbeSocketSendBytes += (uint32_t) ret;
+        }
+#endif /* TSIP_TLS_API_ENABLE */
 
         MBEDTLS_SSL_DEBUG_RET( 2, "ssl->f_send", ret );
 

@@ -22,6 +22,8 @@
  *  http://csrc.nist.gov/publications/nistpubs/800-90/SP800-90revised_March2007.pdf
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_CTR_DRBG_C)
@@ -29,6 +31,7 @@
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/platform_util.h"
 #include "mbedtls/error.h"
+#include "mbedtls/debug.h"
 
 #include <string.h>
 
@@ -44,6 +47,13 @@
 #define mbedtls_printf printf
 #endif /* MBEDTLS_PLATFORM_C */
 #endif /* MBEDTLS_SELF_TEST */
+
+#if defined(TSIP_TLS_API_ENABLE)
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+#endif /* TSIP_TLS_API_ENABLE */
 
 /*
  * CTR_DRBG context initialization
@@ -579,14 +589,77 @@ int mbedtls_ctr_drbg_random( void *p_rng, unsigned char *output,
                              size_t output_len )
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+#if defined(TSIP_TLS_API_ENABLE)
+    e_tsip_err_t tsip_ret;
+    uint32_t tsip_random[4];
+    size_t output_len_cnt;
+    unsigned char *p = output;
+#if defined(MBEDTLS_THREADING_C)
     mbedtls_ctr_drbg_context *ctx = (mbedtls_ctr_drbg_context *) p_rng;
+#endif /* MBEDTLS_THREADING_C */
+#else /* TSIP_TLS_API_ENABLE */
+    mbedtls_ctr_drbg_context *ctx = (mbedtls_ctr_drbg_context *) p_rng;
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_THREADING_C)
     if( ( ret = mbedtls_mutex_lock( &ctx->mutex ) ) != 0 )
         return( ret );
 #endif
 
+#if defined(TSIP_TLS_API_ENABLE)
+    ret = 0;
+    if( output_len > MBEDTLS_CTR_DRBG_MAX_REQUEST )
+    {
+        ret = MBEDTLS_ERR_CTR_DRBG_REQUEST_TOO_BIG;
+        goto exit;
+    }
+
+    mbedtls_platform_zeroize( tsip_random, sizeof( tsip_random ) );
+
+    output_len_cnt = output_len;
+
+#if defined(MBEDTLS_THREADING_C)
+    if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+        goto exit;
+#endif /* MBEDTLS_THREADING_C */
+
+    while ( output_len_cnt != 0 )
+    {
+        APP_ALL_PRINT( 5, "R_TSIP_GenerateRandomNumber called." );
+        tsip_ret = R_TSIP_GenerateRandomNumber( &tsip_random[0] );
+        if ( TSIP_SUCCESS != tsip_ret )
+        {
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+            APP_ALL_PRINT( 1, "R_TSIP_GenerateRandomNumber ret:%d \r\n", tsip_ret );
+            ret = MBEDTLS_ERR_CTR_DRBG_ENTROPY_SOURCE_FAILED;
+            goto exit;
+        }
+        if (output_len_cnt < 16)
+        {
+            memcpy( p, tsip_random, output_len_cnt );
+            p += output_len_cnt;
+            output_len_cnt = 0;
+        }
+        else
+        {
+            memcpy( p, tsip_random, 16 );
+            p += 16;
+            output_len_cnt -= 16;
+        }
+    }
+
+#if defined(MBEDTLS_THREADING_C)
+    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+
+    mbedtls_platform_zeroize( tsip_random, sizeof( tsip_random ) );
+
+exit:
+#else /* TSIP_TLS_API_ENABLE */
     ret = mbedtls_ctr_drbg_random_with_add( ctx, output, output_len, NULL, 0 );
+#endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_THREADING_C)
     if( mbedtls_mutex_unlock( &ctx->mutex ) != 0 )

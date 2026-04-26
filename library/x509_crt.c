@@ -29,6 +29,8 @@
  *  [SIRO] https://cabforum.org/wp-content/uploads/Chunghwatelecom201503cabforumV4.pdf
  */
 
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #include "common.h"
 
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
@@ -37,6 +39,7 @@
 #include "mbedtls/error.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/platform_util.h"
+#include "mbedtls/debug.h"
 
 #include <string.h>
 
@@ -67,7 +70,9 @@
 #if defined(_WIN32) && !defined(EFIX64) && !defined(EFI32)
 #include <windows.h>
 #else
+#if !defined(__CCRX__)
 #include <time.h>
+#endif /* __CCRX__ */
 #endif
 #endif
 
@@ -84,6 +89,14 @@
 #endif /* !_WIN32 || EFIX64 || EFI32 */
 #endif
 
+#if defined(TSIP_TLS_API_ENABLE)
+#include <platform.h> /* include bsp's platform.h before r_tsip_rx_if.h */
+#include "r_tsip_rx_if.h"
+#if defined(MBEDTLS_THREADING_C)
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+#endif /* TSIP_TLS_API_ENABLE */
+
 /*
  * Item in a verification chain: cert and flags for it
  */
@@ -96,6 +109,24 @@ typedef struct {
  * Max size of verification chain: end-entity + intermediates + trusted root
  */
 #define X509_MAX_VERIFY_CHAIN_SIZE    ( MBEDTLS_X509_MAX_INTERMEDIATE_CA + 2 )
+
+#if defined(TSIP_TLS_API_ENABLE)
+x509_crt_verify_chain_item  get_ver_chain[X509_MAX_VERIFY_CHAIN_SIZE];
+size_t  get_chain_cnt;
+uint8_t get_parent_is_trusted_flag; // Flag of whether parent is trusted or not
+uint8_t crt_verify_cnt;             // Number of certificate validation
+uint8_t rootCA_cert_pflag;          // Root CA certificate validation flag
+
+/* public key from Root CA certification */
+uint32_t tsip_rootca_ecdsa_pubkey[24];   // Public key extracted from root CA certificate (ECDSA)
+uint8_t tsip_rootca_rsa_pubkey_scnt = 0; // Number of server public key extracted from root CA certificate (RSA)
+uint32_t tsip_rootca_rsa_pubkey[5][140]; // Server public key extracted from root CA certificate (RSA)
+
+/* public key from server certification */
+uint32_t temp_tsip_server_rsa_pubkey[140];  // Server public key extracted from server certificate bundle (RSA)
+uint32_t temp_tsip_server_ecdsa_pubkey[24]; // Server public key extracted from server certificate bundle (ECDSA)
+uint32_t tsip_server_pubkey_type;           // Server public key type extracted from server certificate
+#endif /* TSIP_TLS_API_ENABLE */
 
 /* Default profile. Do not remove items unless there are serious security
  * concerns. */
@@ -2448,51 +2479,510 @@ static int x509_crt_check_signature( const mbedtls_x509_crt *child,
                                      mbedtls_x509_crt *parent,
                                      mbedtls_x509_crt_restart_ctx *rs_ctx )
 {
-    size_t hash_len;
-#if !defined(MBEDTLS_USE_PSA_CRYPTO)
-    unsigned char hash[MBEDTLS_MD_MAX_SIZE];
-    const mbedtls_md_info_t *md_info;
-    md_info = mbedtls_md_info_from_type( child->sig_md );
-    hash_len = mbedtls_md_get_size( md_info );
+#if defined(TSIP_TLS_API_ENABLE)
+    uint32_t    pubkey_type;
+    uint32_t    pubkey_outputtype;
+    size_t      c_keybitlen = mbedtls_pk_get_bitlen( &child->pk );
+    size_t      p_keybitlen = mbedtls_pk_get_bitlen( &parent->pk );
+    mbedtls_rsa_context *tmprsa;
+    mbedtls_ecp_keypair *tmpecp;
+#endif /* TSIP_TLS_API_ENABLE */
 
-    /* Note: hash errors can happen only after an internal error */
-    if( mbedtls_md( md_info, child->tbs.p, child->tbs.len, hash ) != 0 )
-        return( -1 );
-#else
-    unsigned char hash[PSA_HASH_MAX_SIZE];
-    psa_algorithm_t hash_alg = mbedtls_psa_translate_md( child->sig_md );
-    psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+#if defined(MBEDTLS_SSL_DEBUG_ALL)
+    char buf[1024];
+    mbedtls_x509_crt_info( buf, sizeof(buf) - 1, "", parent );
+    APP_ALL_PRINT( 6, "x509_crt_check_signature parent crt info:\r\n%s\r\n", buf );
+    mbedtls_x509_crt_info( buf, sizeof(buf) - 1, "", child );
+    APP_ALL_PRINT( 6, "x509_crt_check_signature child crt info:\r\n%s\r\n", buf );
 
-    status = psa_hash_compute( hash_alg,
-                               child->tbs.p,
-                               child->tbs.len,
-                               hash,
-                               sizeof( hash ),
-                               &hash_len );
-    if( status != PSA_SUCCESS )
+    APP_ALL_PRINT( 6, "x509_crt_check_signature c_keybitlen:%d p_keybitlen:%d\r\n",
+                        c_keybitlen,
+                        p_keybitlen );
+#endif // MBEDTLS_SSL_DEBUG_ALL
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == g_tsip_endpointflg )
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(MBEDTLS_FUNC_ENABLE)
     {
-        return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
-    }
+        size_t hash_len;
+#if !defined(MBEDTLS_USE_PSA_CRYPTO)
+        unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+        const mbedtls_md_info_t *md_info;
+        md_info = mbedtls_md_info_from_type( child->sig_md );
+        hash_len = mbedtls_md_get_size( md_info );
+
+        /* Note: hash errors can happen only after an internal error */
+        if( mbedtls_md( md_info, child->tbs.p, child->tbs.len, hash ) != 0 )
+            return( -1 );
+#else
+        unsigned char hash[PSA_HASH_MAX_SIZE];
+        psa_algorithm_t hash_alg = mbedtls_psa_translate_md( child->sig_md );
+        psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
+
+        status = psa_hash_compute( hash_alg,
+                                   child->tbs.p,
+                                   child->tbs.len,
+                                   hash,
+                                   sizeof( hash ),
+                                   &hash_len );
+        if( status != PSA_SUCCESS )
+        {
+            return( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+        }
 
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
-    /* Skip expensive computation on obvious mismatch */
-    if( ! mbedtls_pk_can_do( &parent->pk, child->sig_pk ) )
-        return( -1 );
+        /* Skip expensive computation on obvious mismatch */
+        if( ! mbedtls_pk_can_do( &parent->pk, child->sig_pk ) )
+            return( -1 );
 
 #if defined(MBEDTLS_ECDSA_C) && defined(MBEDTLS_ECP_RESTARTABLE)
-    if( rs_ctx != NULL && child->sig_pk == MBEDTLS_PK_ECDSA )
-    {
-        return( mbedtls_pk_verify_restartable( &parent->pk,
-                    child->sig_md, hash, hash_len,
-                    child->sig.p, child->sig.len, &rs_ctx->pk ) );
-    }
+        if( rs_ctx != NULL && child->sig_pk == MBEDTLS_PK_ECDSA )
+        {
+            return( mbedtls_pk_verify_restartable( &parent->pk,
+                        child->sig_md, hash, hash_len,
+                        child->sig.p, child->sig.len, &rs_ctx->pk ) );
+        }
 #else
-    (void) rs_ctx;
+        (void) rs_ctx;
 #endif
 
-    return( mbedtls_pk_verify_ext( child->sig_pk, child->sig_opts, &parent->pk,
-                child->sig_md, hash, hash_len,
-                child->sig.p, child->sig.len ) );
+        return( mbedtls_pk_verify_ext( child->sig_pk, child->sig_opts, &parent->pk,
+                    child->sig_md, hash, hash_len,
+                    child->sig.p, child->sig.len ) );
+    }
+#endif /* MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#if defined(TSIP_TLS_API_ENABLE)
+    {
+        (void) rs_ctx;
+        e_tsip_err_t tsip_ret;
+#if defined(MBEDTLS_THREADING_C)
+        int ret;
+#endif /* MBEDTLS_THREADING_C */
+        int r_pos, w_pos = 0;
+        int r_len, s_len, w_len = 0;
+
+        if( ( get_parent_is_trusted_flag == 1 ) &&
+             ( rootCA_cert_pflag == 1 ) )
+        {
+            if( ( child->sig_pk == MBEDTLS_PK_RSA ) ||
+                ( child->sig_pk == MBEDTLS_PK_RSASSA_PSS ) )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                tmprsa = mbedtls_pk_rsa( child->pk );
+
+                if( child->sig_pk == MBEDTLS_PK_RSASSA_PSS )
+                {
+                    pubkey_type = pubkey_outputtype = 3; // 3:RSASSA-PSS
+                }
+                else
+                {
+                    if( p_keybitlen == 2048 ) // 0:RSA 2048bit 1:RSA 4096bit
+                        pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048;
+                    else
+                        pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA4096;
+
+                    if( c_keybitlen == 2048 ) // 0:RSA 2048bit 1:RSA 4096bit
+                        pubkey_outputtype = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048;
+                    else
+                        pubkey_outputtype = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA4096;
+                }
+
+                if( pubkey_type != pubkey_outputtype )
+                {
+                    APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerificationExtension rootca rsa \r\n" );
+                    tsip_ret = R_TSIP_TlsCertificateVerificationExtension(
+                                pubkey_type,
+                                pubkey_outputtype,
+                                &tsip_rootca_rsa_pubkey[0][0],
+                                child->tbs.p,
+                                (uint32_t)child->tbs.len,
+                                child->sig.p,
+                                // (0x00) -> skip -> tmprsa->pubkey_n_spos + "1"
+                                (uint32_t) ( tmprsa->pubkey_n_spos + 1 )
+                                    - (uint32_t) (uint8_t *) child->tbs.p,
+                                (uint32_t) ( tmprsa->pubkey_n_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p )
+                                    + ( tmprsa->pubkey_n_epos - 1 ),
+                                (uint32_t) tmprsa->pubkey_e_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p,
+                                (uint32_t) ( tmprsa->pubkey_e_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p )
+                                    + ( tmprsa->pubkey_e_epos -1 ),
+                                temp_tsip_server_rsa_pubkey );
+                }
+                else
+                {
+                    APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerification rootca rsa \r\n" );
+                    tsip_ret = R_TSIP_TlsCertificateVerification(
+                                pubkey_type,
+                                &tsip_rootca_rsa_pubkey[0][0],
+                                child->tbs.p,
+                                (uint32_t)child->tbs.len,
+                                child->sig.p,
+                                // (0x00) -> skip -> tmprsa->pubkey_n_spos + "1"
+                                (uint32_t) ( tmprsa->pubkey_n_spos + 1 )
+                                    - (uint32_t) (uint8_t *) child->tbs.p,
+                                (uint32_t) ( tmprsa->pubkey_n_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p )
+                                    + ( tmprsa->pubkey_n_epos - 1 ),
+                                (uint32_t) tmprsa->pubkey_e_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p,
+                                (uint32_t) ( tmprsa->pubkey_e_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p )
+                                    + ( tmprsa->pubkey_e_epos -1 ),
+                                temp_tsip_server_rsa_pubkey );
+                }
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    for (int i = 1; i < tsip_rootca_rsa_pubkey_scnt; i++)
+                    {
+#if defined(MBEDTLS_THREADING_C)
+                        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                        if( pubkey_type != pubkey_outputtype )
+                        {
+                            APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerificationExtension rootca rsa \r\n" );
+                            tsip_ret = R_TSIP_TlsCertificateVerificationExtension(
+                                        pubkey_type,
+                                        pubkey_outputtype,
+                                        &tsip_rootca_rsa_pubkey[i][0],
+                                        child->tbs.p,
+                                        (uint32_t)child->tbs.len,
+                                        child->sig.p,
+                                        // (0x00) -> skip -> tmprsa->pubkey_n_spos + "1"
+                                        (uint32_t) ( tmprsa->pubkey_n_spos + 1 )
+                                            - (uint32_t) (uint8_t *) child->tbs.p,
+                                        (uint32_t) ( tmprsa->pubkey_n_spos
+                                            - (uint32_t) (uint8_t *) child->tbs.p )
+                                            + ( tmprsa->pubkey_n_epos -1 ),
+                                        (uint32_t) tmprsa->pubkey_e_spos
+                                            - (uint32_t) (uint8_t *) child->tbs.p,
+                                        (uint32_t) ( tmprsa->pubkey_e_spos
+                                            - (uint32_t) (uint8_t *) child->tbs.p )
+                                            + ( tmprsa->pubkey_e_epos -1 ),
+                                        temp_tsip_server_rsa_pubkey );
+                        } else {
+                            APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerification rootca rsa \r\n" );
+                            tsip_ret = R_TSIP_TlsCertificateVerification(
+                                        pubkey_type,
+                                        &tsip_rootca_rsa_pubkey[i][0],
+                                        child->tbs.p,
+                                        (uint32_t)child->tbs.len,
+                                        child->sig.p,
+                                        // (0x00) -> skip -> tmprsa->pubkey_n_spos + "1"
+                                        (uint32_t) ( tmprsa->pubkey_n_spos + 1 )
+                                            - (uint32_t) (uint8_t *) child->tbs.p,
+                                        (uint32_t) ( tmprsa->pubkey_n_spos
+                                            - (uint32_t) (uint8_t *) child->tbs.p )
+                                            + ( tmprsa->pubkey_n_epos -1 ),
+                                        (uint32_t) tmprsa->pubkey_e_spos
+                                            - (uint32_t) (uint8_t *) child->tbs.p,
+                                        (uint32_t) ( tmprsa->pubkey_e_spos
+                                            - (uint32_t) (uint8_t *) child->tbs.p )
+                                            + ( tmprsa->pubkey_e_epos -1 ),
+                                        temp_tsip_server_rsa_pubkey );
+                        }
+#if defined(MBEDTLS_THREADING_C)
+                        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                        if( TSIP_SUCCESS == tsip_ret )
+                        {
+                            break;
+                        }
+                    }
+
+                    if( TSIP_SUCCESS != tsip_ret )
+                    {
+                        if( pubkey_type != pubkey_outputtype )
+                        {
+                            APP_ALL_PRINT( 1, "R_TSIP_TlsCertificateVerificationExtension rootca rsa ret:%d \r\n", tsip_ret );
+                        }
+                        else
+                        {
+                            APP_ALL_PRINT( 1, "R_TSIP_TlsCertificateVerification rootca rsa ret:%d \r\n", tsip_ret );
+                        }
+
+                        return ( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+                    }
+                }
+
+                rootCA_cert_pflag = 0; // clear flag
+
+                while ( crt_verify_cnt > 0 )
+                {
+                    crt_verify_cnt -= 1;
+                    child = get_ver_chain[crt_verify_cnt].crt;
+
+#if defined(MBEDTLS_THREADING_C)
+                    if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                        return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                    tmprsa = mbedtls_pk_rsa( child->pk );
+
+                    if( child->sig_pk == MBEDTLS_PK_RSASSA_PSS )
+                    {
+                        pubkey_type = pubkey_outputtype = 3;  // 3：RSASSA-PSS
+                    }
+                    else
+                    {
+                        p_keybitlen = c_keybitlen;
+                        c_keybitlen = mbedtls_pk_get_bitlen( &child->pk );
+                        if( p_keybitlen == 2048 ) // 0:RSA 2048bit 1:RSA 4096bit
+                            pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048;
+                        else
+                            pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA4096;
+
+                        if( c_keybitlen == 2048 ) // 0:RSA 2048bit 1:RSA 4096bit
+                            pubkey_outputtype = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048;
+                        else
+                            pubkey_outputtype = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA4096;
+                    }
+
+                    if( pubkey_type != pubkey_outputtype )
+                    {
+                        APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerificationExtension server rsa \r\n" );
+                        tsip_ret = R_TSIP_TlsCertificateVerificationExtension(
+                                    pubkey_type,
+                                    pubkey_outputtype,
+                                    temp_tsip_server_rsa_pubkey,
+                                    child->tbs.p,
+                                    (uint32_t)child->tbs.len,
+                                    child->sig.p,
+                                    // (0x00) -> skip -> tmprsa->pubkey_n_spos + "1"
+                                    (uint32_t) ( tmprsa->pubkey_n_spos + 1 )
+                                        - (uint32_t) (uint8_t *) child->tbs.p,
+                                    (uint32_t) ( tmprsa->pubkey_n_spos
+                                        - (uint32_t) (uint8_t *) child->tbs.p )
+                                        + ( tmprsa->pubkey_n_epos -1 ),
+                                    (uint32_t) tmprsa->pubkey_e_spos
+                                        - (uint32_t) (uint8_t *) child->tbs.p,
+                                    (uint32_t) ( tmprsa->pubkey_e_spos
+                                        - (uint32_t) (uint8_t *) child->tbs.p )
+                                        + ( tmprsa->pubkey_e_epos -1 ),
+                                    temp_tsip_server_rsa_pubkey );
+                    }
+                    else
+                    {
+                        APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerification server rsa \r\n" );
+                        tsip_ret = R_TSIP_TlsCertificateVerification(
+                                    pubkey_type,
+                                    temp_tsip_server_rsa_pubkey,
+                                    child->tbs.p,
+                                    (uint32_t)child->tbs.len,
+                                    child->sig.p,
+                                    // (0x00) -> skip -> tmprsa->pubkey_n_spos + "1"
+                                    (uint32_t) ( tmprsa->pubkey_n_spos + 1 )
+                                        - (uint32_t) (uint8_t *) child->tbs.p,
+                                    (uint32_t) ( tmprsa->pubkey_n_spos
+                                        - (uint32_t) (uint8_t *) child->tbs.p )
+                                        + ( tmprsa->pubkey_n_epos -1 ),
+                                    (uint32_t) tmprsa->pubkey_e_spos
+                                        - (uint32_t) (uint8_t *) child->tbs.p,
+                                    (uint32_t) ( tmprsa->pubkey_e_spos
+                                        - (uint32_t) (uint8_t *) child->tbs.p )
+                                        + ( tmprsa->pubkey_e_epos -1 ),
+                                    temp_tsip_server_rsa_pubkey );
+                    }
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    if( TSIP_SUCCESS != tsip_ret )
+                    {
+                        if( pubkey_type != pubkey_outputtype )
+                        {
+                            APP_ALL_PRINT( 1, "R_TSIP_TlsCertificateVerificationExtension server rsa ret:%d \r\n", tsip_ret );
+                        }
+                        else
+                        {
+                            APP_ALL_PRINT( 1, "R_TSIP_TlsCertificateVerification server rsa ret:%d \r\n", tsip_ret );
+                        }
+
+                        return ( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+                    }
+                }
+                tsip_server_pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048;
+            }
+            else if( child->sig_pk == MBEDTLS_PK_ECDSA )
+            {
+                uint8_t parse_sig_data[64] = {0};
+                uint8_t dummy_sig_data[72] = {0};
+                tmpecp = mbedtls_pk_ec( child->pk );
+
+                memcpy( dummy_sig_data, child->sig.p, 72 );
+                memset( parse_sig_data, 0x00, 64 );
+
+                /* copy r of ECDSA signature data */
+                r_pos = 3;
+                w_pos = 0;
+                r_len = dummy_sig_data[r_pos++];
+                w_len = r_len;
+                /* in the case that r length is 33 byte including padding byte */
+                if( r_len == 33 )
+                {
+                    r_pos++; // skip padding byte
+                    w_len--; // copy size is 32 bytes
+                }
+                /* length of r is less than 32 bytes */
+                else if( r_len <= 31 )
+                {
+                    w_pos += (32 - r_len);
+                }
+                memcpy( &parse_sig_data[w_pos], &dummy_sig_data[r_pos], w_len );
+
+                /* copy s of ECDSA signature data */
+                r_pos += (w_len + 1); // consider of tag(0x02) byte
+                w_pos += w_len;
+                s_len = dummy_sig_data[r_pos++];
+                w_len = s_len;
+                /* in the case that s length is 33 byte including padding byte */
+                if( s_len == 33 )
+                {
+                    r_pos++;
+                    w_len--;
+                }
+                /* length of s is less than 32 bytes */
+                else if( s_len <= 31 )
+                {
+                    w_pos += (32 - s_len);
+                }
+                memcpy( &parse_sig_data[w_pos], &dummy_sig_data[r_pos], w_len );
+
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerification rootca ecdsa \r\n" );
+                tsip_ret = R_TSIP_TlsCertificateVerification(
+                            (uint32_t) R_TSIP_TLS_PUBLIC_KEY_TYPE_ECDSA_P256,
+                            &tsip_rootca_ecdsa_pubkey[0],
+                            child->tbs.p,
+                            (uint32_t)child->tbs.len,
+                            parse_sig_data,
+                            // (0x04) -> skip -> tmpecp->pubkey_n_spos + "1"
+                            (uint32_t) ( tmpecp->pubkey_n_spos + 1 )
+                                - (uint32_t) (uint8_t *) child->tbs.p,
+                            (uint32_t) ( tmpecp->pubkey_n_spos
+                                - (uint32_t) (uint8_t *) child->tbs.p )
+                                + ( tmpecp->pubkey_n_epos -1 ),
+                            (uint32_t) tmpecp->pubkey_e_spos
+                                - (uint32_t) (uint8_t *) child->tbs.p,
+                            (uint32_t) ( tmpecp->pubkey_e_spos
+                                - (uint32_t) (uint8_t *) child->tbs.p )
+                                + ( tmpecp->pubkey_e_epos -1 ),
+                            temp_tsip_server_ecdsa_pubkey );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_TlsCertificateVerification rootca ecdsa ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+                }
+
+                rootCA_cert_pflag = 0; // clear flag
+
+                while( crt_verify_cnt > 0 )
+                {
+                    crt_verify_cnt -= 1;
+                    child = get_ver_chain[crt_verify_cnt].crt;
+
+                    tmpecp = mbedtls_pk_ec( child->pk );
+
+                    memcpy( dummy_sig_data, child->sig.p, 72 );
+                    memset( parse_sig_data, 0x00, 64 );
+
+                    /* copy r of ECDSA signature data */
+                    r_pos = 3;
+                    w_pos = 0;
+                    r_len = dummy_sig_data[r_pos++];
+                    w_len = r_len;
+                    /* in the case that r length is 33 byte including padding byte */
+                    if( r_len == 33 )
+                    {
+                        r_pos++; // skip padding byte
+                        w_len--; // copy size is 32 bytes
+                    }
+                    /* length of r is less than 32 bytes */
+                    else if( r_len <= 31 )
+                    {
+                        w_pos += (32 - r_len);
+                    }
+                    memcpy( &parse_sig_data[w_pos], &dummy_sig_data[r_pos], w_len );
+
+                    /* copy s of ECDSA signature data */
+                    r_pos += (w_len + 1); // consider of tag(0x02) byte
+                    w_pos += w_len;
+                    s_len = dummy_sig_data[r_pos++];
+                    w_len = s_len;
+                    /* in the case that s length is 33 byte including padding byte */
+                    if( s_len == 33 )
+                    {
+                        r_pos++;
+                        w_len--;
+                    }
+                    /* length of s is less than 32 bytes */
+                    else if( s_len <= 31 )
+                    {
+                        w_pos += (32 - s_len);
+                    }
+                    memcpy( &parse_sig_data[w_pos], &dummy_sig_data[r_pos], w_len );
+
+#if defined(MBEDTLS_THREADING_C)
+                    if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                        return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                    APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerification server ecdsa \r\n" );
+                    tsip_ret = R_TSIP_TlsCertificateVerification(
+                                (uint32_t) R_TSIP_TLS_PUBLIC_KEY_TYPE_ECDSA_P256,
+                                temp_tsip_server_ecdsa_pubkey,
+                                 child->tbs.p,
+                                (uint32_t)child->tbs.len,
+                                parse_sig_data,
+                                // (0x04) -> skip -> tmpecp->pubkey_n_spos + "1"
+                                (uint32_t) ( tmpecp->pubkey_n_spos + 1 )
+                                    - (uint32_t) (uint8_t *) child->tbs.p,
+                                (uint32_t) ( tmpecp->pubkey_n_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p )
+                                    + ( tmpecp->pubkey_n_epos -1 ),
+                                (uint32_t) tmpecp->pubkey_e_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p,
+                                (uint32_t) ( tmpecp->pubkey_e_spos
+                                    - (uint32_t) (uint8_t *) child->tbs.p )
+                                    + ( tmpecp->pubkey_e_epos -1 ),
+                                temp_tsip_server_ecdsa_pubkey );
+#if defined(MBEDTLS_THREADING_C)
+                    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                    if( TSIP_SUCCESS != tsip_ret )
+                    {
+                        APP_ALL_PRINT( 1, "R_TSIP_TlsCertificateVerification server ecdsa ret:%d \r\n", tsip_ret );
+                        return ( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+                    }
+                }
+                tsip_server_pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_ECDSA_P256;
+            }
+        }
+        else if( get_parent_is_trusted_flag == 0 )
+        {
+            tsip_ret = TSIP_SUCCESS;
+        }
+
+        return( tsip_ret );
+    }
+#endif /* TSIP_TLS_API_ENABLE */
+    return( -1 );
 }
 
 /*
@@ -2587,6 +3077,10 @@ static int x509_crt_find_parent_in(
     mbedtls_x509_crt *parent, *fallback_parent;
     int signature_is_good = 0, fallback_signature_is_good;
 
+#if defined(TSIP_TLS_API_ENABLE)
+    get_parent_is_trusted_flag = top;
+#endif /* TSIP_TLS_API_ENABLE */
+
 #if defined(MBEDTLS_ECDSA_C) && defined(MBEDTLS_ECP_RESTARTABLE)
     /* did we have something in progress? */
     if( rs_ctx != NULL && rs_ctx->parent != NULL )
@@ -2609,8 +3103,20 @@ static int x509_crt_find_parent_in(
     fallback_parent = NULL;
     fallback_signature_is_good = 0;
 
+#if defined(MBEDTLS_SSL_DEBUG_ALL)
+    char buf[2048];
+    mbedtls_x509_crt_info( buf, sizeof(buf) - 1, "", child );
+    APP_ALL_PRINT( 1, "x509_crt_find_parent_in child info:\r\n%s\r\n", buf );
+#endif
+
     for( parent = candidates; parent != NULL; parent = parent->next )
     {
+#if defined(MBEDTLS_SSL_DEBUG_ALL)
+        char buf[2048];
+        mbedtls_x509_crt_info( buf, sizeof(buf) - 1, "", parent );
+        APP_ALL_PRINT( 1, "x509_crt_find_parent_in parent info:\r\n%s\r\n", buf );
+#endif // MBEDTLS_SSL_DEBUG_ALL
+
         /* basic parenting skills (name, CA bit, key usage) */
         if( x509_crt_check_parent( child, parent, top ) != 0 )
             continue;
@@ -2621,6 +3127,10 @@ static int x509_crt_find_parent_in(
         {
             continue;
         }
+
+#if defined(TSIP_TLS_API_ENABLE)
+        rootCA_cert_pflag = 1;
+#endif /* TSIP_TLS_API_ENABLE */
 
         /* Signature */
 #if defined(MBEDTLS_ECDSA_C) && defined(MBEDTLS_ECP_RESTARTABLE)
@@ -2768,6 +3278,8 @@ static int x509_crt_check_ee_locally_trusted(
                     mbedtls_x509_crt *trust_ca )
 {
     mbedtls_x509_crt *cur;
+    mbedtls_rsa_context *tmprsa;
+    mbedtls_ecp_keypair *tmpecp;
 
     /* must be self-issued */
     if( x509_name_cmp( &crt->issuer, &crt->subject ) != 0 )
@@ -2779,6 +3291,172 @@ static int x509_crt_check_ee_locally_trusted(
         if( crt->raw.len == cur->raw.len &&
             memcmp( crt->raw.p, cur->raw.p, crt->raw.len ) == 0 )
         {
+#if defined(TSIP_TLS_API_ENABLE)
+            // self-signed certificate
+            e_tsip_err_t tsip_ret;
+#if defined(MBEDTLS_THREADING_C)
+            int ret;
+#endif /* MBEDTLS_THREADING_C */
+
+            if( ( crt->sig_pk == MBEDTLS_PK_RSA ) ||
+                ( crt->sig_pk == MBEDTLS_PK_RSASSA_PSS ) )
+            {
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                tmprsa = mbedtls_pk_rsa( crt->pk );
+
+                APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerification server rsa." );
+                tsip_ret = R_TSIP_TlsCertificateVerification(
+                            (uint32_t) R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048,
+                            &tsip_rootca_rsa_pubkey[0][0],
+                            crt->tbs.p,
+                            (uint32_t)crt->tbs.len,
+                            crt->sig.p,
+                            // (0x00) -> skip -> tmprsa->pubkey_n_spos + "1"
+                            (uint32_t) ( tmprsa->pubkey_n_spos + 1 )
+                                - (uint32_t) (uint8_t *) crt->tbs.p,
+                            (uint32_t) ( tmprsa->pubkey_n_spos
+                                - (uint32_t) (uint8_t *) crt->tbs.p )
+                                + ( tmprsa->pubkey_n_epos - 1 ),
+                            (uint32_t) tmprsa->pubkey_e_spos
+                                - (uint32_t) (uint8_t *) crt->tbs.p,
+                            (uint32_t) ( tmprsa->pubkey_e_spos
+                                - (uint32_t) (uint8_t *) crt->tbs.p )
+                                + ( tmprsa->pubkey_e_epos -1 ),
+                            temp_tsip_server_rsa_pubkey );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    for( int i = 1; i < tsip_rootca_rsa_pubkey_scnt; i++ )
+                    {
+#if defined(MBEDTLS_THREADING_C)
+                        if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                            return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                        APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerification server rsa." );
+                        tsip_ret = R_TSIP_TlsCertificateVerification(
+                                    (uint32_t) R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048,
+                                    &tsip_rootca_rsa_pubkey[i][0],
+                                    crt->tbs.p,
+                                    (uint32_t)crt->tbs.len,
+                                    crt->sig.p,
+                                    // (0x00) -> skip -> tmprsa->pubkey_n_spos + "1"
+                                    (uint32_t) ( tmprsa->pubkey_n_spos + 1 )
+                                        - (uint32_t) (uint8_t *) crt->tbs.p,
+                                    (uint32_t) ( tmprsa->pubkey_n_spos
+                                        - (uint32_t) (uint8_t *) crt->tbs.p )
+                                        + ( tmprsa->pubkey_n_epos -1 ),
+                                    (uint32_t) tmprsa->pubkey_e_spos
+                                        - (uint32_t) (uint8_t *) crt->tbs.p,
+                                    (uint32_t) ( tmprsa->pubkey_e_spos
+                                        - (uint32_t) (uint8_t *) crt->tbs.p )
+                                        + ( tmprsa->pubkey_e_epos -1 ),
+                                    temp_tsip_server_rsa_pubkey );
+#if defined(MBEDTLS_THREADING_C)
+                        mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                        if( TSIP_SUCCESS == tsip_ret )
+                        {
+                            break;
+                        }
+                    }
+
+                    if( TSIP_SUCCESS != tsip_ret )
+                    {
+                        APP_ALL_PRINT( 1, "R_TSIP_TlsCertificateVerification server rsa ret:%d \r\n", tsip_ret );
+                        return ( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+                    }
+                }
+                tsip_server_pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_RSA2048;
+            }
+            else if( crt->sig_pk == MBEDTLS_PK_ECDSA )
+            {
+                uint8_t parse_sig_data[64] = {0};
+                uint8_t dummy_sig_data[72] = {0};
+                int r_pos, w_pos = 0;
+                int r_len, s_len, w_len = 0;
+
+                tmpecp = mbedtls_pk_ec( crt->pk );
+
+                memcpy( dummy_sig_data, crt->sig.p, 72 );
+                memset( parse_sig_data, 0x00, 64 );
+
+                /* copy r of ECDSA signature data */
+                r_pos = 3;
+                w_pos = 0;
+                r_len = dummy_sig_data[r_pos++];
+                w_len = r_len;
+                /* in the case that r length is 33 byte including padding byte */
+                if( r_len == 33 )
+                {
+                    r_pos++; // skip padding byte
+                    w_len--; // copy size is 32 bytes
+                }
+                /* length of r is less than 32 bytes */
+                else if( r_len <= 31 )
+                {
+                    w_pos += (32 - r_len);
+                }
+                memcpy( &parse_sig_data[w_pos], &dummy_sig_data[r_pos], w_len );
+
+                /* copy s of ECDSA signature data */
+                r_pos += (w_len + 1); // consider of tag(0x02) byte
+                w_pos += w_len;
+                s_len = dummy_sig_data[r_pos++];
+                w_len = s_len;
+                /* in the case that s length is 33 byte including padding byte */
+                if( s_len == 33 )
+                {
+                    r_pos++;
+                    w_len--;
+                }
+                /* length of s is less than 32 bytes */
+                else if( s_len <= 31 )
+                {
+                    w_pos += (32 - s_len);
+                }
+                memcpy( &parse_sig_data[w_pos], &dummy_sig_data[r_pos], w_len );
+
+#if defined(MBEDTLS_THREADING_C)
+                if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                    return( ret );
+#endif /* MBEDTLS_THREADING_C */
+                APP_ALL_PRINT( 5, "R_TSIP_TlsCertificateVerification server ecdsa." );
+                tsip_ret = R_TSIP_TlsCertificateVerification(
+                            (uint32_t) R_TSIP_TLS_PUBLIC_KEY_TYPE_ECDSA_P256,
+                            &temp_tsip_server_ecdsa_pubkey[0],
+                            crt->tbs.p,
+                            (uint32_t)crt->tbs.len,
+                            parse_sig_data,
+                            // (0x04) -> skip -> tmpecp->pubkey_n_spos + "1"
+                            (uint32_t) ( tmpecp->pubkey_n_spos + 1 )
+                                - (uint32_t) (uint8_t *) crt->tbs.p,
+                            (uint32_t) ( tmpecp->pubkey_n_spos
+                                - (uint32_t) (uint8_t *) crt->tbs.p )
+                                + ( tmpecp->pubkey_n_epos -1 ),
+                            (uint32_t) tmpecp->pubkey_e_spos
+                                - (uint32_t) (uint8_t *) crt->tbs.p,
+                            (uint32_t) ( tmpecp->pubkey_e_spos
+                                - (uint32_t) (uint8_t *) crt->tbs.p )
+                                + ( tmpecp->pubkey_e_epos -1 ),
+                            temp_tsip_server_ecdsa_pubkey );
+#if defined(MBEDTLS_THREADING_C)
+                mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+                if( TSIP_SUCCESS != tsip_ret )
+                {
+                    APP_ALL_PRINT( 1, "R_TSIP_TlsCertificateVerification server ecdsa ret:%d \r\n", tsip_ret );
+                    return ( MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED );
+                }
+                tsip_server_pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_ECDSA_P256;
+            }
+#endif /* TSIP_TLS_API_ENABLE */
+
             return( 0 );
         }
     }
@@ -2872,6 +3550,12 @@ static int x509_crt_verify_chain(
     parent_is_trusted = 0;
     child_is_trusted = 0;
 
+#if defined(TSIP_TLS_API_ENABLE)
+    memset( get_ver_chain, 0, sizeof( get_ver_chain ) );    // initialize
+    get_chain_cnt = 0;    // initialize
+    crt_verify_cnt = 0;
+#endif /* TSIP_TLS_API_ENABLE */
+
     while( 1 ) {
         /* Add certificate to the verification chain */
         cur = &ver_chain->items[ver_chain->len];
@@ -2879,6 +3563,11 @@ static int x509_crt_verify_chain(
         cur->flags = 0;
         ver_chain->len++;
         flags = &cur->flags;
+
+#if defined(TSIP_TLS_API_ENABLE)
+        get_ver_chain[get_chain_cnt].crt = child;
+        ++get_chain_cnt;
+#endif /* TSIP_TLS_API_ENABLE */
 
         /* Check time-validity (all certificates) */
         if( mbedtls_x509_time_is_past( &child->valid_to ) )
@@ -2996,6 +3685,10 @@ find_parent:
         parent = NULL;
         child_is_trusted = parent_is_trusted;
         signature_is_good = 0;
+
+#if defined(TSIP_TLS_API_ENABLE)
+        crt_verify_cnt += 1;
+#endif /* TSIP_TLS_API_ENABLE */
     }
 }
 

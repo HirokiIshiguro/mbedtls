@@ -19,6 +19,9 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
+
+/* This file is modified to demonstrate usage of TSIP driver. */
+
 #ifndef MBEDTLS_DEBUG_H
 #define MBEDTLS_DEBUG_H
 
@@ -68,6 +71,21 @@
     mbedtls_debug_printf_ecdh( ssl, level, __FILE__, __LINE__, ecdh, attr )
 #endif
 
+#if defined(TSIP_TLS_API_ENABLE)
+#if defined(__CCRX__)
+#define APP_ALL_PRINT(level, ...)                       \
+    mbedtls_tsip_debug_print_msg( __func__, __LINE__,   \
+                                  level, __VA_ARGS__ )
+#else /* __CCRX__ */
+#define APP_ALL_PRINT(level, fn_, ...)                          \
+    mbedtls_tsip_debug_print_msg( __FUNCTION__, __LINE__,       \
+                                  level, fn_, ##__VA_ARGS__ )
+
+#endif /* __CCRX__ */
+#else /* TSIP_TLS_API_ENABLE */
+#define APP_ALL_PRINT(fn_, ...)                         do { } while( 0 )
+#endif /* TSIP_TLS_API_ENABLE */
+
 #else /* MBEDTLS_DEBUG_C */
 
 #define MBEDTLS_SSL_DEBUG_MSG( level, args )            do { } while( 0 )
@@ -77,6 +95,10 @@
 #define MBEDTLS_SSL_DEBUG_ECP( level, text, X )         do { } while( 0 )
 #define MBEDTLS_SSL_DEBUG_CRT( level, text, crt )       do { } while( 0 )
 #define MBEDTLS_SSL_DEBUG_ECDH( level, ecdh, attr )     do { } while( 0 )
+
+#if defined(TSIP_TLS_API_ENABLE)
+#define APP_ALL_PRINT(fn_, ...)                         do { } while( 0 )
+#endif /* TSIP_TLS_API_ENABLE */
 
 #endif /* MBEDTLS_DEBUG_C */
 
@@ -125,7 +147,7 @@
    #define MBEDTLS_PRINTF_SIZET     PRIuPTR
    #define MBEDTLS_PRINTF_LONGLONG  "I64d"
 #else /* (defined(__MINGW32__)  && __USE_MINGW_ANSI_STDIO == 0) || (defined(_MSC_VER) && _MSC_VER < 1800) */
-   #define MBEDTLS_PRINTF_SIZET     "zu"
+   #define MBEDTLS_PRINTF_SIZET     "u"
    #define MBEDTLS_PRINTF_LONGLONG  "lld"
 #endif /* (defined(__MINGW32__)  && __USE_MINGW_ANSI_STDIO == 0) || (defined(_MSC_VER) && _MSC_VER < 1800) */
 
@@ -303,6 +325,25 @@ void mbedtls_debug_printf_ecdh( const mbedtls_ssl_context *ssl, int level,
                                 const mbedtls_ecdh_context *ecdh,
                                 mbedtls_debug_ecdh_attr attr );
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE)
+/**
+ * \brief    Print a message to the TSIP debug output. This function is always used
+ *           through the APP_ALL_PRINT() macro, which supplies
+             file and line number parameters.
+ *
+ * \param strfunc   function the message has occurred in
+ * \param line      line number the message has occurred at
+ * \param level     error level of the debug message
+ * \param format    format specifier, in printf format
+ * \param ...       variables used by the format specifier
+ *
+ * \attention       This function is intended for INTERNAL usage within the
+ *                  library only.
+ */
+void mbedtls_tsip_debug_print_msg( const char *strfunc, int line,
+                                   int level, const char *format, ... );
+#endif /* TSIP_TLS_API_ENABLE */
 
 #ifdef __cplusplus
 }
