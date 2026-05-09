@@ -26,6 +26,7 @@
 #include "mbedtls/oid.h"
 #include "mbedtls/platform_util.h"
 #include "mbedtls/error.h"
+#include "mbedtls/debug.h"
 
 #include <string.h>
 
@@ -64,6 +65,12 @@
     MBEDTLS_INTERNAL_VALIDATE_RET( cond, MBEDTLS_ERR_PK_BAD_INPUT_DATA )
 #define PK_VALIDATE( cond )        \
     MBEDTLS_INTERNAL_VALIDATE( cond )
+
+#if defined(TSIP_TLS_API_ENABLE)
+#define TSIP_PKWRITE_TRACE( ... )    APP_ALL_PRINT( 0, __VA_ARGS__ )
+#else
+#define TSIP_PKWRITE_TRACE( ... )    do { } while( 0 )
+#endif
 
 #if defined(MBEDTLS_RSA_C)
 /*
@@ -425,6 +432,8 @@ int mbedtls_pk_write_key_der( const mbedtls_pk_context *key, unsigned char *buf,
         mbedtls_ecp_keypair *ec = mbedtls_pk_ec( *key );
         size_t pub_len = 0, par_len = 0;
 
+        TSIP_PKWRITE_TRACE( "TSIP Fleet trace: pk_write_key_der EC enter" );
+
         /*
          * RFC 5915, or SEC1 Appendix C.4
          *
@@ -438,6 +447,7 @@ int mbedtls_pk_write_key_der( const mbedtls_pk_context *key, unsigned char *buf,
 
         /* publicKey */
         MBEDTLS_ASN1_CHK_ADD( pub_len, pk_write_ec_pubkey( &c, buf, ec ) );
+        TSIP_PKWRITE_TRACE( "TSIP Fleet trace: pk_write_key_der public key done" );
 
         if( c - buf < 1 )
             return( MBEDTLS_ERR_ASN1_BUF_TOO_SMALL );
@@ -454,6 +464,7 @@ int mbedtls_pk_write_key_der( const mbedtls_pk_context *key, unsigned char *buf,
 
         /* parameters */
         MBEDTLS_ASN1_CHK_ADD( par_len, pk_write_ec_param( &c, buf, ec ) );
+        TSIP_PKWRITE_TRACE( "TSIP Fleet trace: pk_write_key_der parameters done" );
 
         MBEDTLS_ASN1_CHK_ADD( par_len, mbedtls_asn1_write_len( &c, buf, par_len ) );
         MBEDTLS_ASN1_CHK_ADD( par_len, mbedtls_asn1_write_tag( &c, buf,
@@ -462,6 +473,7 @@ int mbedtls_pk_write_key_der( const mbedtls_pk_context *key, unsigned char *buf,
 
         /* privateKey */
         MBEDTLS_ASN1_CHK_ADD( len, pk_write_ec_private( &c, buf, ec ) );
+        TSIP_PKWRITE_TRACE( "TSIP Fleet trace: pk_write_key_der private key done" );
 
         /* version */
         MBEDTLS_ASN1_CHK_ADD( len, mbedtls_asn1_write_int( &c, buf, 1 ) );
