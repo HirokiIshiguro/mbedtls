@@ -76,6 +76,7 @@
 #include "mbedtls/threading.h"
 #include "mbedtls/platform_util.h"
 #include "mbedtls/error.h"
+#include "mbedtls/debug.h"
 
 #include "bn_mul.h"
 #include "ecp_invasive.h"
@@ -101,6 +102,12 @@
 #endif
 
 #include "ecp_internal_alt.h"
+
+#if defined(TSIP_TLS_API_ENABLE)
+#define TSIP_FLEET_TRACE( ... )    APP_ALL_PRINT( 0, __VA_ARGS__ )
+#else
+#define TSIP_FLEET_TRACE( ... )    do { } while( 0 )
+#endif
 
 #if ( defined(__ARMCC_VERSION) || defined(_MSC_VER) ) && \
     !defined(inline) && !defined(__cplusplus)
@@ -3145,10 +3152,14 @@ int mbedtls_ecp_gen_keypair_base( mbedtls_ecp_group *grp,
     ECP_VALIDATE_RET( Q     != NULL );
     ECP_VALIDATE_RET( f_rng != NULL );
 
+    TSIP_FLEET_TRACE( "TSIP Fleet trace: ecp_gen_keypair_base enter" );
     MBEDTLS_MPI_CHK( mbedtls_ecp_gen_privkey( grp, d, f_rng, p_rng ) );
+    TSIP_FLEET_TRACE( "TSIP Fleet trace: ecp_gen_privkey done" );
     MBEDTLS_MPI_CHK( mbedtls_ecp_mul( grp, Q, d, G, f_rng, p_rng ) );
+    TSIP_FLEET_TRACE( "TSIP Fleet trace: ecp_mul done" );
 
 cleanup:
+    TSIP_FLEET_TRACE( "TSIP Fleet trace: ecp_gen_keypair_base exit ret=%d", ret );
     return( ret );
 }
 
