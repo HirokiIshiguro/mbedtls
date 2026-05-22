@@ -7603,14 +7603,26 @@ int mbedtls_ssl_parse_finished( mbedtls_ssl_context *ssl )
     unsigned char buf[SSL_MAX_HASH_LEN];
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> parse finished" ) );
+    APP_ALL_PRINT( 0, "TSDBG finished enter state:%d disable:%u\r\n",
+                   ssl->state,
+                   (unsigned) ssl->disable_tsip_tls_accel );
 
+    APP_ALL_PRINT( 0, "TSDBG finished calc begin from:%u\r\n",
+                   (unsigned) ( ssl->conf->endpoint ^ 1 ) );
     ssl->handshake->calc_finished( ssl, buf, ssl->conf->endpoint ^ 1 );
+    APP_ALL_PRINT( 0, "TSDBG finished calc done\r\n" );
 
+    APP_ALL_PRINT( 0, "TSDBG finished read begin\r\n" );
     if( ( ret = mbedtls_ssl_read_record( ssl, 1 ) ) != 0 )
     {
         MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_read_record", ret );
+        APP_ALL_PRINT( 0, "TSDBG finished read ret:%d\r\n", ret );
         goto exit;
     }
+    APP_ALL_PRINT( 0, "TSDBG finished read ok type:%u hs:%u len:%u\r\n",
+                   (unsigned) ssl->in_msgtype,
+                   (unsigned) ssl->in_msg[0],
+                   (unsigned) ssl->in_hslen );
 
     if( ssl->in_msgtype != MBEDTLS_SSL_MSG_HANDSHAKE )
     {
@@ -7647,6 +7659,7 @@ int mbedtls_ssl_parse_finished( mbedtls_ssl_context *ssl )
         ret = MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
         goto exit;
     }
+    APP_ALL_PRINT( 0, "TSDBG finished verify ok\r\n" );
 
 #if defined(MBEDTLS_SSL_RENEGOTIATION)
     ssl->verify_data_len = hash_len;
@@ -7673,6 +7686,7 @@ int mbedtls_ssl_parse_finished( mbedtls_ssl_context *ssl )
 #endif
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= parse finished" ) );
+    APP_ALL_PRINT( 0, "TSDBG finished exit state:%d\r\n", ssl->state );
 
 exit:
     mbedtls_platform_zeroize( buf, hash_len );
