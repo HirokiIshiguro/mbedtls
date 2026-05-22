@@ -1238,6 +1238,18 @@ int mbedtls_ssl_setup( mbedtls_ssl_context *ssl,
     memset( &ssl->dtls_srtp_info, 0, sizeof(ssl->dtls_srtp_info) );
 #endif
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( conf->endpoint == MBEDTLS_SSL_IS_CLIENT &&
+        ssl->disable_tsip_tls_accel != 0U )
+    {
+        g_tsip_endpointflg = MBEDTLS_SSL_IS_SERVER;
+    }
+    else
+    {
+        g_tsip_endpointflg = (unsigned char) conf->endpoint;
+    }
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+
     if( ( ret = ssl_handshake_init( ssl ) ) != 0 )
         goto error;
 
