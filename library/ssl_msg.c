@@ -4796,13 +4796,6 @@ int mbedtls_ssl_read_record( mbedtls_ssl_context *ssl,
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> read record" ) );
-    if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-    {
-        APP_ALL_PRINT( 0, "TSDBG read record enter state:%d left:%u keep:%u\r\n",
-                       ssl->state,
-                       (unsigned) ssl->in_left,
-                       (unsigned) ssl->keep_current_message );
-    }
 
     if( ssl->keep_current_message == 0 )
     {
@@ -4877,13 +4870,6 @@ int mbedtls_ssl_read_record( mbedtls_ssl_context *ssl,
     }
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= read record" ) );
-    if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-    {
-        APP_ALL_PRINT( 0, "TSDBG read record exit state:%d type:%u len:%u\r\n",
-                       ssl->state,
-                       (unsigned) ssl->in_msgtype,
-                       (unsigned) ssl->in_msglen );
-    }
 
     return( 0 );
 }
@@ -5497,20 +5483,7 @@ static int ssl_get_next_record( mbedtls_ssl_context *ssl )
     /* Ensure that we have enough space available for the default form
      * of TLS / DTLS record headers (5 Bytes for TLS, 13 Bytes for DTLS,
      * with no space for CIDs counted in). */
-    if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-    {
-        APP_ALL_PRINT( 0, "TSDBG get record header fetch begin state:%d want:%u left:%u\r\n",
-                       ssl->state,
-                       (unsigned) mbedtls_ssl_in_hdr_len( ssl ),
-                       (unsigned) ssl->in_left );
-    }
     ret = mbedtls_ssl_fetch_input( ssl, mbedtls_ssl_in_hdr_len( ssl ) );
-    if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-    {
-        APP_ALL_PRINT( 0, "TSDBG get record header fetch ret:%d left:%u\r\n",
-                       ret,
-                       (unsigned) ssl->in_left );
-    }
     if( ret != 0 )
     {
         MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_fetch_input", ret );
@@ -5518,14 +5491,6 @@ static int ssl_get_next_record( mbedtls_ssl_context *ssl )
     }
 
     ret = ssl_parse_record_header( ssl, ssl->in_hdr, ssl->in_left, &rec );
-    if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-    {
-        APP_ALL_PRINT( 0, "TSDBG get record header parsed ret:%d type:%u buf:%u data:%u\r\n",
-                       ret,
-                       (unsigned) rec.type,
-                       (unsigned) rec.buf_len,
-                       (unsigned) rec.data_len );
-    }
     if( ret != 0 )
     {
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
@@ -5605,19 +5570,7 @@ static int ssl_get_next_record( mbedtls_ssl_context *ssl )
         /*
          * Fetch record contents from underlying transport.
          */
-        if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-        {
-            APP_ALL_PRINT( 0, "TSDBG get record body fetch begin buf:%u left:%u\r\n",
-                           (unsigned) rec.buf_len,
-                           (unsigned) ssl->in_left );
-        }
         ret = mbedtls_ssl_fetch_input( ssl, rec.buf_len );
-        if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-        {
-            APP_ALL_PRINT( 0, "TSDBG get record body fetch ret:%d left:%u\r\n",
-                           ret,
-                           (unsigned) ssl->in_left );
-        }
         if( ret != 0 )
         {
             MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_fetch_input", ret );
@@ -5689,12 +5642,6 @@ static int ssl_get_next_record( mbedtls_ssl_context *ssl )
 #endif
             return( ret );
         }
-    }
-    else if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-    {
-        APP_ALL_PRINT( 0, "TSDBG get record content ok type:%u len:%u\r\n",
-                       (unsigned) ssl->in_msgtype,
-                       (unsigned) ssl->in_msglen );
     }
 
 
@@ -5923,19 +5870,12 @@ int mbedtls_ssl_parse_change_cipher_spec( mbedtls_ssl_context *ssl )
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "=> parse change cipher spec" ) );
-    APP_ALL_PRINT( 0, "TSDBG ccs enter state:%d left:%u\r\n",
-                   ssl->state,
-                   (unsigned) ssl->in_left );
 
     if( ( ret = mbedtls_ssl_read_record( ssl, 1 ) ) != 0 )
     {
         MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_read_record", ret );
-        APP_ALL_PRINT( 0, "TSDBG ccs read ret:%d\r\n", ret );
         return( ret );
     }
-    APP_ALL_PRINT( 0, "TSDBG ccs read ok type:%u len:%u\r\n",
-                   (unsigned) ssl->in_msgtype,
-                   (unsigned) ssl->in_msglen );
 
     if( ssl->in_msgtype != MBEDTLS_SSL_MSG_CHANGE_CIPHER_SPEC )
     {
@@ -5981,7 +5921,6 @@ int mbedtls_ssl_parse_change_cipher_spec( mbedtls_ssl_context *ssl )
     ssl->state++;
 
     MBEDTLS_SSL_DEBUG_MSG( 2, ( "<= parse change cipher spec" ) );
-    APP_ALL_PRINT( 0, "TSDBG ccs exit state:%d\r\n", ssl->state );
 
     return( 0 );
 }

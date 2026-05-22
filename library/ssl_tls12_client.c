@@ -3943,13 +3943,6 @@ int mbedtls_ssl_handshake_client_step( mbedtls_ssl_context *ssl )
 {
     int ret = 0;
 
-    if( ssl->state >= MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC )
-    {
-        APP_ALL_PRINT( 0, "TSDBG client step state:%d disable:%u\r\n",
-                       ssl->state,
-                       (unsigned) ssl->disable_tsip_tls_accel );
-    }
-
     /* Change state now, so that it is right in mbedtls_ssl_read_record(), used
      * by DTLS for dropping out-of-sequence ChangeCipherSpec records */
 #if defined(MBEDTLS_SSL_SESSION_TICKETS)
@@ -4065,17 +4058,13 @@ int mbedtls_ssl_handshake_client_step( mbedtls_ssl_context *ssl )
 
         case MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC:
             MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC" ) );
-            APP_ALL_PRINT( 0, "TSDBG client parse ccs call\r\n" );
             ret = mbedtls_ssl_parse_change_cipher_spec( ssl );
-            APP_ALL_PRINT( 0, "TSDBG client parse ccs ret:%d state:%d\r\n", ret, ssl->state );
             MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_CHANGE_CIPHER_SPEC mbedtls_ssl_parse_change_cipher_spec ret:%d", ret ) );
             break;
 
         case MBEDTLS_SSL_SERVER_FINISHED:
             MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_FINISHED" ) );
-            APP_ALL_PRINT( 0, "TSDBG client parse finished call\r\n" );
             ret = mbedtls_ssl_parse_finished( ssl );
-            APP_ALL_PRINT( 0, "TSDBG client parse finished ret:%d state:%d\r\n", ret, ssl->state );
             MBEDTLS_SSL_DEBUG_MSG( 5, ( "Client MBEDTLS_SSL_SERVER_FINISHED mbedtls_ssl_parse_finished ret:%d", ret ) );
             break;
 
