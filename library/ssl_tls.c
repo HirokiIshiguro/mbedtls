@@ -3184,6 +3184,18 @@ int mbedtls_ssl_handshake_step( mbedtls_ssl_context *ssl )
         return( MBEDTLS_ERR_SSL_BAD_INPUT_DATA );
     }
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT &&
+        ssl->disable_tsip_tls_accel != 0U )
+    {
+        g_tsip_endpointflg = MBEDTLS_SSL_IS_SERVER;
+    }
+    else
+    {
+        g_tsip_endpointflg = (unsigned char) ssl->conf->endpoint;
+    }
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+
     ret = ssl_prepare_handshake_step( ssl );
     if( ret != 0 )
         return( ret );
@@ -3198,7 +3210,14 @@ int mbedtls_ssl_handshake_step( mbedtls_ssl_context *ssl )
         MBEDTLS_SSL_DEBUG_MSG( 2, ( "client state: %s",
                                     mbedtls_ssl_states_str( ssl->state ) ) );
 #if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
-        g_tsip_endpointflg = MBEDTLS_SSL_IS_CLIENT;
+        if( ssl->disable_tsip_tls_accel != 0U )
+        {
+            g_tsip_endpointflg = MBEDTLS_SSL_IS_SERVER;
+        }
+        else
+        {
+            g_tsip_endpointflg = MBEDTLS_SSL_IS_CLIENT;
+        }
 #endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
 
         switch( ssl->state )
