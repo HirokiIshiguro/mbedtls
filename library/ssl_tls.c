@@ -3500,7 +3500,8 @@ void mbedtls_ssl_handshake_free( mbedtls_ssl_context *ssl )
 #endif /* MBEDTLS_SSL_ASYNC_PRIVATE */
 
 #if defined(TSIP_TLS_API_ENABLE)
-        if( ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT )
+        if( ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT &&
+            ssl->disable_tsip_tls_accel == 0U )
         {
             e_tsip_err_t tsip_ret;
             uint8_t dummy_data[32];
