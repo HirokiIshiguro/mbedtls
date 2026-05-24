@@ -102,6 +102,9 @@ volatile uint32_t gTsipTlsProbeAesGcmDecryptTicks = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendCalls = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendBytes = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendTicks = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateCalls = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes = 0U;
 #endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_TEST_HOOKS)
@@ -4362,6 +4365,20 @@ static int ssl_preset_suiteb_ciphersuites[] = {
  */
 static uint16_t ssl_preset_default_sig_algs[] = {
 
+#if defined(TSIP_TLS13_CERTVERIFY_SIG_ALGS_SHA256_ONLY)
+
+#if defined(MBEDTLS_ECDSA_C) &&  defined(MBEDTLS_SHA256_C) && \
+    defined(MBEDTLS_ECP_DP_SECP256R1_ENABLED)
+    MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256,
+#endif /* MBEDTLS_ECDSA_C && MBEDTLS_SHA256_C &&
+          MBEDTLS_ECP_DP_SECP256R1_ENABLED */
+
+#if defined(MBEDTLS_X509_RSASSA_PSS_SUPPORT) && defined(MBEDTLS_SHA256_C)
+    MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256,
+#endif /* MBEDTLS_X509_RSASSA_PSS_SUPPORT && MBEDTLS_SHA256_C */
+
+#else /* TSIP_TLS13_CERTVERIFY_SIG_ALGS_SHA256_ONLY */
+
 #if defined(MBEDTLS_ECDSA_C) &&  defined(MBEDTLS_SHA256_C) && \
     defined(MBEDTLS_ECP_DP_SECP256R1_ENABLED)
     MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256,
@@ -4403,6 +4420,8 @@ static uint16_t ssl_preset_default_sig_algs[] = {
 #if defined(MBEDTLS_X509_RSASSA_PSS_SUPPORT) && defined(MBEDTLS_SHA256_C)
     MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256,
 #endif /* MBEDTLS_X509_RSASSA_PSS_SUPPORT && MBEDTLS_SHA256_C */
+
+#endif /* TSIP_TLS13_CERTVERIFY_SIG_ALGS_SHA256_ONLY */
 
     MBEDTLS_TLS_SIG_NONE
 };
