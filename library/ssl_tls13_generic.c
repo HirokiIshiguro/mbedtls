@@ -223,7 +223,13 @@ static int ssl_tls13_write_tsip_certificate_verify_body(
 
     MBEDTLS_SSL_CHK_BUF_PTR( buf, end, SSL_TLS13_TSIP_CERT_VERIFY_MAX_SIZE );
 
+#if defined(TSIP_TLS13_CERTVERIFY_TRACE_ENABLE)
+    APP_ALL_PRINT( 0,
+                   "R_TSIP_Tls13CertificateVerifyGenerate scheme:%u called.\r\n",
+                   (unsigned int) tsip_scheme );
+#else
     APP_ALL_PRINT( 5, "R_TSIP_Tls13CertificateVerifyGenerate called.\r\n" );
+#endif /* TSIP_TLS13_CERTVERIFY_TRACE_ENABLE */
 #if defined(MBEDTLS_THREADING_C)
     if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
         return( ret );
