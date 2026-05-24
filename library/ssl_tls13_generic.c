@@ -40,6 +40,9 @@
 
 #if defined(TSIP_TLS_API_ENABLE)
 #include "mbedtls/pk.h"
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateCalls;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes;
 #if defined(MBEDTLS_THREADING_C)
 #include "mbedtls/threading.h"
 extern mbedtls_threading_mutex_t mutexUseTsip;
@@ -256,6 +259,10 @@ static int ssl_tls13_write_tsip_certificate_verify_body(
     {
         return( MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL );
     }
+
+    gTsipTlsProbeTls13CertificateVerifyGenerateCalls++;
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme = (uint32_t)tsip_scheme;
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes = tsip_certificate_verify_len;
 
     *out_len = (size_t) tsip_certificate_verify_len;
     *handled = 1;
