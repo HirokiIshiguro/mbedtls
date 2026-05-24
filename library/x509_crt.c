@@ -2479,16 +2479,17 @@ static int x509_crt_check_signature( const mbedtls_x509_crt *child,
                                      mbedtls_x509_crt *parent,
                                      mbedtls_x509_crt_restart_ctx *rs_ctx )
 {
-#if defined(TSIP_TLS_API_ENABLE)
+#if defined(TSIP_TLS_API_ENABLE) && !defined(TSIP_TLS13_CERTVERIFY_ONLY)
     uint32_t    pubkey_type;
     uint32_t    pubkey_outputtype;
     size_t      c_keybitlen = mbedtls_pk_get_bitlen( &child->pk );
     size_t      p_keybitlen = mbedtls_pk_get_bitlen( &parent->pk );
     mbedtls_rsa_context *tmprsa;
     mbedtls_ecp_keypair *tmpecp;
-#endif /* TSIP_TLS_API_ENABLE */
+#endif /* TSIP_TLS_API_ENABLE && !TSIP_TLS13_CERTVERIFY_ONLY */
 
-#if defined(MBEDTLS_SSL_DEBUG_ALL)
+#if defined(MBEDTLS_SSL_DEBUG_ALL) && defined(TSIP_TLS_API_ENABLE) && \
+    !defined(TSIP_TLS13_CERTVERIFY_ONLY)
     char buf[1024];
     mbedtls_x509_crt_info( buf, sizeof(buf) - 1, "", parent );
     APP_ALL_PRINT( 6, "x509_crt_check_signature parent crt info:\r\n%s\r\n", buf );
@@ -2498,11 +2499,12 @@ static int x509_crt_check_signature( const mbedtls_x509_crt *child,
     APP_ALL_PRINT( 6, "x509_crt_check_signature c_keybitlen:%d p_keybitlen:%d\r\n",
                         c_keybitlen,
                         p_keybitlen );
-#endif // MBEDTLS_SSL_DEBUG_ALL
+#endif /* MBEDTLS_SSL_DEBUG_ALL && TSIP_TLS_API_ENABLE && !TSIP_TLS13_CERTVERIFY_ONLY */
 
-#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE) && \
+    !defined(TSIP_TLS13_CERTVERIFY_ONLY)
     if( MBEDTLS_SSL_IS_SERVER == g_tsip_endpointflg )
-#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE && !TSIP_TLS13_CERTVERIFY_ONLY */
 #if defined(MBEDTLS_FUNC_ENABLE)
     {
         size_t hash_len;
@@ -2552,10 +2554,11 @@ static int x509_crt_check_signature( const mbedtls_x509_crt *child,
                     child->sig.p, child->sig.len ) );
     }
 #endif /* MBEDTLS_FUNC_ENABLE */
-#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE) && \
+    !defined(TSIP_TLS13_CERTVERIFY_ONLY)
     else
-#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
-#if defined(TSIP_TLS_API_ENABLE)
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE && !TSIP_TLS13_CERTVERIFY_ONLY */
+#if defined(TSIP_TLS_API_ENABLE) && !defined(TSIP_TLS13_CERTVERIFY_ONLY)
     {
         (void) rs_ctx;
         e_tsip_err_t tsip_ret;
@@ -2981,7 +2984,7 @@ static int x509_crt_check_signature( const mbedtls_x509_crt *child,
 
         return( tsip_ret );
     }
-#endif /* TSIP_TLS_API_ENABLE */
+#endif /* TSIP_TLS_API_ENABLE && !TSIP_TLS13_CERTVERIFY_ONLY */
     return( -1 );
 }
 
@@ -3278,8 +3281,10 @@ static int x509_crt_check_ee_locally_trusted(
                     mbedtls_x509_crt *trust_ca )
 {
     mbedtls_x509_crt *cur;
+#if defined(TSIP_TLS_API_ENABLE) && !defined(TSIP_TLS13_CERTVERIFY_ONLY)
     mbedtls_rsa_context *tmprsa;
     mbedtls_ecp_keypair *tmpecp;
+#endif /* TSIP_TLS_API_ENABLE && !TSIP_TLS13_CERTVERIFY_ONLY */
 
     /* must be self-issued */
     if( x509_name_cmp( &crt->issuer, &crt->subject ) != 0 )
@@ -3291,7 +3296,7 @@ static int x509_crt_check_ee_locally_trusted(
         if( crt->raw.len == cur->raw.len &&
             memcmp( crt->raw.p, cur->raw.p, crt->raw.len ) == 0 )
         {
-#if defined(TSIP_TLS_API_ENABLE)
+#if defined(TSIP_TLS_API_ENABLE) && !defined(TSIP_TLS13_CERTVERIFY_ONLY)
             // self-signed certificate
             e_tsip_err_t tsip_ret;
 #if defined(MBEDTLS_THREADING_C)
@@ -3455,7 +3460,7 @@ static int x509_crt_check_ee_locally_trusted(
                 }
                 tsip_server_pubkey_type = R_TSIP_TLS_PUBLIC_KEY_TYPE_ECDSA_P256;
             }
-#endif /* TSIP_TLS_API_ENABLE */
+#endif /* TSIP_TLS_API_ENABLE && !TSIP_TLS13_CERTVERIFY_ONLY */
 
             return( 0 );
         }
