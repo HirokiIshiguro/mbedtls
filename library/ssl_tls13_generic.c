@@ -140,12 +140,16 @@ static void ssl_tls13_create_verify_structure( const unsigned char *transcript_h
 
     if( from == MBEDTLS_SSL_IS_CLIENT )
     {
-        memcpy( verify_buffer + idx, MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN( client_cv ) );
+        memcpy( verify_buffer + idx,
+                mbedtls_ssl_tls13_labels.client_cv,
+                MBEDTLS_SSL_TLS1_3_LBL_LEN( client_cv ) );
         idx += MBEDTLS_SSL_TLS1_3_LBL_LEN( client_cv );
     }
     else
     { /* from == MBEDTLS_SSL_IS_SERVER */
-        memcpy( verify_buffer + idx, MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN( server_cv ) );
+        memcpy( verify_buffer + idx,
+                mbedtls_ssl_tls13_labels.server_cv,
+                MBEDTLS_SSL_TLS1_3_LBL_LEN( server_cv ) );
         idx += MBEDTLS_SSL_TLS1_3_LBL_LEN( server_cv );
     }
 
