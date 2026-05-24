@@ -1174,6 +1174,12 @@ static int ssl_tls13_parse_server_hello( mbedtls_ssl_context *ssl,
                     3,
                     ( "unknown extension found: %u ( ignoring )",
                       extension_type ) );
+#if defined(TSIP_TLS13_CERTVERIFY_TRACE_ENABLE)
+                APP_ALL_PRINT( 0,
+                               "TLS1.3 ServerHello unsupported extension=%u len=%u\r\n",
+                               (unsigned int) extension_type,
+                               (unsigned int) extension_data_len );
+#endif /* TSIP_TLS13_CERTVERIFY_TRACE_ENABLE */
 
                 fatal_alert = MBEDTLS_SSL_ALERT_MSG_UNSUPPORTED_EXT;
                 goto cleanup;
@@ -1417,6 +1423,16 @@ static int ssl_tls13_parse_encrypted_extensions( mbedtls_ssl_context *ssl,
         switch( extension_type )
         {
 
+            case MBEDTLS_TLS_EXT_SERVERNAME:
+                if( extension_data_len != 0 )
+                {
+                    MBEDTLS_SSL_PEND_FATAL_ALERT(
+                        MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                        MBEDTLS_ERR_SSL_DECODE_ERROR );
+                    return( MBEDTLS_ERR_SSL_DECODE_ERROR );
+                }
+                break;
+
             case MBEDTLS_TLS_EXT_SUPPORTED_GROUPS:
                 MBEDTLS_SSL_DEBUG_MSG( 3, ( "found extensions supported groups" ) );
                 break;
@@ -1435,6 +1451,12 @@ static int ssl_tls13_parse_encrypted_extensions( mbedtls_ssl_context *ssl,
             default:
                 MBEDTLS_SSL_DEBUG_MSG(
                     3, ( "unsupported extension found: %u ", extension_type) );
+#if defined(TSIP_TLS13_CERTVERIFY_TRACE_ENABLE)
+                APP_ALL_PRINT( 0,
+                               "TLS1.3 EncryptedExtensions unsupported extension=%u len=%u\r\n",
+                               (unsigned int) extension_type,
+                               (unsigned int) extension_data_len );
+#endif /* TSIP_TLS13_CERTVERIFY_TRACE_ENABLE */
                 MBEDTLS_SSL_PEND_FATAL_ALERT(
                     MBEDTLS_SSL_ALERT_MSG_UNSUPPORTED_EXT,
                     MBEDTLS_ERR_SSL_UNSUPPORTED_EXTENSION );
@@ -1965,5 +1987,3 @@ int mbedtls_ssl_tls13_handshake_client_step( mbedtls_ssl_context *ssl )
 }
 
 #endif /* MBEDTLS_SSL_CLI_C && MBEDTLS_SSL_PROTO_TLS1_3 */
-
-

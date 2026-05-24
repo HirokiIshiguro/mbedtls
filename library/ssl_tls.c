@@ -102,6 +102,9 @@ volatile uint32_t gTsipTlsProbeAesGcmDecryptTicks = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendCalls = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendBytes = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendTicks = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateCalls = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes = 0U;
 #endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_TEST_HOOKS)
