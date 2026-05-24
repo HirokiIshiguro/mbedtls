@@ -1049,6 +1049,44 @@ static int ssl_tls13_select_sig_alg_for_certificate_verify(
     uint16_t *sig_alg = ssl->handshake->received_sig_algs;
 
     *algorithm = MBEDTLS_TLS1_3_SIG_NONE;
+
+#if defined(TSIP_TLS13_CERTVERIFY_PREFER_TSIP_SHA256)
+    {
+        static const uint16_t tsip_preferred_sig_algs[] = {
+            MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256,
+            MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256,
+            MBEDTLS_TLS1_3_SIG_NONE
+        };
+        const uint16_t *preferred_sig_alg;
+
+        for( preferred_sig_alg = tsip_preferred_sig_algs;
+             *preferred_sig_alg != MBEDTLS_TLS1_3_SIG_NONE;
+             preferred_sig_alg++ )
+        {
+            for( sig_alg = ssl->handshake->received_sig_algs;
+                 *sig_alg != MBEDTLS_TLS1_3_SIG_NONE ;
+                 sig_alg++ )
+            {
+                if( ( *sig_alg == *preferred_sig_alg ) &&
+                    mbedtls_ssl_sig_alg_is_offered( ssl, *sig_alg ) &&
+                    mbedtls_ssl_tls13_sig_alg_for_cert_verify_is_supported( *sig_alg ) &&
+                    mbedtls_ssl_tls13_check_sig_alg_cert_key_match( *sig_alg, own_key ) )
+                {
+                    MBEDTLS_SSL_DEBUG_MSG( 3,
+                                           ( "select_sig_alg_for_certificate_verify:"
+                                             "selected TSIP-preferred signature algorithm %s [%04x]",
+                                             mbedtls_ssl_sig_alg_to_str( *sig_alg ),
+                                             *sig_alg ) );
+                    *algorithm = *sig_alg;
+                    return( 0 );
+                }
+            }
+        }
+    }
+
+    sig_alg = ssl->handshake->received_sig_algs;
+#endif /* TSIP_TLS13_CERTVERIFY_PREFER_TSIP_SHA256 */
+
     for( ; *sig_alg != MBEDTLS_TLS1_3_SIG_NONE ; sig_alg++ )
     {
         if( mbedtls_ssl_sig_alg_is_offered( ssl, *sig_alg ) &&
