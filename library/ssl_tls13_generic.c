@@ -197,11 +197,17 @@ static int ssl_tls13_write_tsip_certificate_verify_body(
 
     *handled = 0;
 
-    if( ssl->conf->endpoint != MBEDTLS_SSL_IS_CLIENT ||
-        ssl->disable_tsip_tls_accel != 0U )
+    if( ssl->conf->endpoint != MBEDTLS_SSL_IS_CLIENT )
     {
         return( 0 );
     }
+
+#if !defined(TSIP_TLS13_CERTVERIFY_ONLY)
+    if( ssl->disable_tsip_tls_accel != 0U )
+    {
+        return( 0 );
+    }
+#endif /* !TSIP_TLS13_CERTVERIFY_ONLY */
 
     if( handshake_hash_len != R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE )
     {
