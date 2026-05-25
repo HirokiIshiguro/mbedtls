@@ -38,6 +38,17 @@
 #include "psa/crypto.h"
 #include "mbedtls/psa_util.h"
 
+#if defined(TSIP_TLS_API_ENABLE)
+#include "mbedtls/pk.h"
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateCalls;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes;
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+#endif /* TSIP_TLS_API_ENABLE */
+
 const uint8_t mbedtls_ssl_tls13_hello_retry_request_magic[
                 MBEDTLS_SERVER_HELLO_RANDOM_LEN ] =
                     { 0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
@@ -111,6 +122,12 @@ cleanup:
                                       MBEDTLS_TLS1_3_MD_MAX_SIZE    \
                                     )
 
+#if defined(TSIP_TLS_API_ENABLE)
+/* TLS 1.3 TSIP CertificateVerify supports RSA-PSS RSAE SHA-256 (256-byte
+ * signature + 4-byte header) and ECDSA P-256 SHA-256 (smaller DER body). */
+#define SSL_TLS13_TSIP_CERT_VERIFY_MAX_SIZE ( 4 + 256 )
+#endif /* TSIP_TLS_API_ENABLE */
+
 /*
  * The ssl_tls13_create_verify_structure() creates the verify structure.
  * As input, it requires the transcript hash.
@@ -140,12 +157,16 @@ static void ssl_tls13_create_verify_structure( const unsigned char *transcript_h
 
     if( from == MBEDTLS_SSL_IS_CLIENT )
     {
-        memcpy( verify_buffer + idx, MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN( client_cv ) );
+        memcpy( verify_buffer + idx,
+                mbedtls_ssl_tls13_labels.client_cv,
+                MBEDTLS_SSL_TLS1_3_LBL_LEN( client_cv ) );
         idx += MBEDTLS_SSL_TLS1_3_LBL_LEN( client_cv );
     }
     else
     { /* from == MBEDTLS_SSL_IS_SERVER */
-        memcpy( verify_buffer + idx, MBEDTLS_SSL_TLS1_3_LBL_WITH_LEN( server_cv ) );
+        memcpy( verify_buffer + idx,
+                mbedtls_ssl_tls13_labels.server_cv,
+                MBEDTLS_SSL_TLS1_3_LBL_LEN( server_cv ) );
         idx += MBEDTLS_SSL_TLS1_3_LBL_LEN( server_cv );
     }
 
@@ -156,6 +177,104 @@ static void ssl_tls13_create_verify_structure( const unsigned char *transcript_h
 
     *verify_buffer_len = idx;
 }
+
+#if defined(TSIP_TLS_API_ENABLE)
+static int ssl_tls13_write_tsip_certificate_verify_body(
+                                            mbedtls_ssl_context *ssl,
+                                            uint16_t algorithm,
+                                            const unsigned char *handshake_hash,
+                                            size_t handshake_hash_len,
+                                            unsigned char *buf,
+                                            unsigned char *end,
+                                            size_t *out_len,
+                                            int *handled )
+{
+    e_tsip_err_t tsip_ret;
+    e_tsip_tls13_signature_scheme_type_t tsip_scheme;
+    uint32_t *tsip_private_key_index = NULL;
+    uint32_t tsip_certificate_verify_len = 0;
+    int ret = 0;
+
+    *handled = 0;
+
+    if( ssl->conf->endpoint != MBEDTLS_SSL_IS_CLIENT )
+    {
+        return( 0 );
+    }
+
+#if !defined(TSIP_TLS13_CERTVERIFY_ONLY)
+    if( ssl->disable_tsip_tls_accel != 0U )
+    {
+        return( 0 );
+    }
+#endif /* !TSIP_TLS13_CERTVERIFY_ONLY */
+
+    if( handshake_hash_len != R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE )
+    {
+        return( 0 );
+    }
+
+    switch( algorithm )
+    {
+        case MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256:
+            tsip_scheme = TSIP_TLS13_SIGNATURE_SCHEME_RSA_PSS_RSAE_SHA256;
+            tsip_private_key_index = (uint32_t *) &rsa2048_private_key;
+            break;
+
+        case MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256:
+            tsip_scheme = TSIP_TLS13_SIGNATURE_SCHEME_ECDSA_SECP256R1_SHA256;
+            tsip_private_key_index = (uint32_t *) &eccp256_private_key;
+            break;
+
+        default:
+            return( 0 );
+    }
+
+    MBEDTLS_SSL_CHK_BUF_PTR( buf, end, SSL_TLS13_TSIP_CERT_VERIFY_MAX_SIZE );
+
+#if defined(TSIP_TLS13_CERTVERIFY_TRACE_ENABLE)
+    APP_ALL_PRINT( 0,
+                   "R_TSIP_Tls13CertificateVerifyGenerate scheme:%u called.\r\n",
+                   (unsigned int) tsip_scheme );
+#else
+    APP_ALL_PRINT( 5, "R_TSIP_Tls13CertificateVerifyGenerate called.\r\n" );
+#endif /* TSIP_TLS13_CERTVERIFY_TRACE_ENABLE */
+#if defined(MBEDTLS_THREADING_C)
+    if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+        return( ret );
+#endif /* MBEDTLS_THREADING_C */
+    tsip_ret = R_TSIP_Tls13CertificateVerifyGenerate(
+                    tsip_private_key_index,
+                    tsip_scheme,
+                    (uint8_t *) handshake_hash,
+                    buf,
+                    &tsip_certificate_verify_len );
+#if defined(MBEDTLS_THREADING_C)
+    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif /* MBEDTLS_THREADING_C */
+
+    if( TSIP_SUCCESS != tsip_ret )
+    {
+        MBEDTLS_SSL_DEBUG_MSG( 1,
+            ( "R_TSIP_Tls13CertificateVerifyGenerate failed: %d",
+              (int) tsip_ret ) );
+        return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+    }
+
+    if( tsip_certificate_verify_len > SSL_TLS13_TSIP_CERT_VERIFY_MAX_SIZE )
+    {
+        return( MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL );
+    }
+
+    gTsipTlsProbeTls13CertificateVerifyGenerateCalls++;
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme = (uint32_t)tsip_scheme;
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes = tsip_certificate_verify_len;
+
+    *out_len = (size_t) tsip_certificate_verify_len;
+    *handled = 1;
+    return( 0 );
+}
+#endif /* TSIP_TLS_API_ENABLE */
 
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_parse_certificate_verify( mbedtls_ssl_context *ssl,
@@ -936,6 +1055,44 @@ static int ssl_tls13_select_sig_alg_for_certificate_verify(
     uint16_t *sig_alg = ssl->handshake->received_sig_algs;
 
     *algorithm = MBEDTLS_TLS1_3_SIG_NONE;
+
+#if defined(TSIP_TLS13_CERTVERIFY_PREFER_TSIP_SHA256)
+    {
+        static const uint16_t tsip_preferred_sig_algs[] = {
+            MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256,
+            MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256,
+            MBEDTLS_TLS1_3_SIG_NONE
+        };
+        const uint16_t *preferred_sig_alg;
+
+        for( preferred_sig_alg = tsip_preferred_sig_algs;
+             *preferred_sig_alg != MBEDTLS_TLS1_3_SIG_NONE;
+             preferred_sig_alg++ )
+        {
+            for( sig_alg = ssl->handshake->received_sig_algs;
+                 *sig_alg != MBEDTLS_TLS1_3_SIG_NONE ;
+                 sig_alg++ )
+            {
+                if( ( *sig_alg == *preferred_sig_alg ) &&
+                    mbedtls_ssl_sig_alg_is_offered( ssl, *sig_alg ) &&
+                    mbedtls_ssl_tls13_sig_alg_for_cert_verify_is_supported( *sig_alg ) &&
+                    mbedtls_ssl_tls13_check_sig_alg_cert_key_match( *sig_alg, own_key ) )
+                {
+                    MBEDTLS_SSL_DEBUG_MSG( 3,
+                                           ( "select_sig_alg_for_certificate_verify:"
+                                             "selected TSIP-preferred signature algorithm %s [%04x]",
+                                             mbedtls_ssl_sig_alg_to_str( *sig_alg ),
+                                             *sig_alg ) );
+                    *algorithm = *sig_alg;
+                    return( 0 );
+                }
+            }
+        }
+    }
+
+    sig_alg = ssl->handshake->received_sig_algs;
+#endif /* TSIP_TLS13_CERTVERIFY_PREFER_TSIP_SHA256 */
+
     for( ; *sig_alg != MBEDTLS_TLS1_3_SIG_NONE ; sig_alg++ )
     {
         if( mbedtls_ssl_sig_alg_is_offered( ssl, *sig_alg ) &&
@@ -976,6 +1133,9 @@ static int ssl_tls13_write_certificate_verify_body( mbedtls_ssl_context *ssl,
     psa_algorithm_t psa_algorithm = PSA_ALG_NONE;
     uint16_t algorithm = MBEDTLS_TLS1_3_SIG_NONE;
     size_t signature_len = 0;
+#if defined(TSIP_TLS_API_ENABLE)
+    int tsip_cert_verify_handled = 0;
+#endif /* TSIP_TLS_API_ENABLE */
     unsigned char verify_hash[ MBEDTLS_MD_MAX_SIZE ];
     size_t verify_hash_len;
     psa_status_t status = PSA_ERROR_CORRUPTION_DETECTED;
@@ -1034,6 +1194,28 @@ static int ssl_tls13_write_certificate_verify_body( mbedtls_ssl_context *ssl,
     {
         return( MBEDTLS_ERR_SSL_INTERNAL_ERROR  );
     }
+
+#if defined(TSIP_TLS_API_ENABLE)
+    ret = ssl_tls13_write_tsip_certificate_verify_body( ssl,
+                                                        algorithm,
+                                                        handshake_hash,
+                                                        handshake_hash_len,
+                                                        p,
+                                                        end,
+                                                        out_len,
+                                                        &tsip_cert_verify_handled );
+    if( ret != 0 )
+    {
+        MBEDTLS_SSL_DEBUG_RET( 1,
+            "ssl_tls13_write_tsip_certificate_verify_body", ret );
+        return( ret );
+    }
+
+    if( tsip_cert_verify_handled != 0 )
+    {
+        return( 0 );
+    }
+#endif /* TSIP_TLS_API_ENABLE */
 
     /* Check there is space for the algorithm identifier (2 bytes) and the
      * signature length (2 bytes).
