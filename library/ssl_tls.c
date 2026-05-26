@@ -80,6 +80,23 @@ static inline void tsip_tls_sha256_clone(tsip_sha_md5_handle_t *dst,
 
 #if defined(MBEDTLS_FUNC_ENABLE)
 unsigned char g_tsip_endpointflg;
+
+static void ssl_tsip_update_endpoint_flag( const mbedtls_ssl_context *ssl )
+{
+#if defined(TSIP_TLS13_CERTVERIFY_ONLY)
+    g_tsip_endpointflg = (unsigned char) ssl->conf->endpoint;
+#else
+    if( ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT &&
+        ssl->disable_tsip_tls_accel != 0U )
+    {
+        g_tsip_endpointflg = MBEDTLS_SSL_IS_SERVER;
+    }
+    else
+    {
+        g_tsip_endpointflg = (unsigned char) ssl->conf->endpoint;
+    }
+#endif /* TSIP_TLS13_CERTVERIFY_ONLY */
+}
 #endif /* MBEDTLS_FUNC_ENABLE */
 volatile uint32_t gTsipTlsProbeAesGcmEncryptTsipRecords = 0U;
 volatile uint32_t gTsipTlsProbeAesGcmEncryptTsipBytes = 0U;
@@ -102,6 +119,9 @@ volatile uint32_t gTsipTlsProbeAesGcmDecryptTicks = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendCalls = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendBytes = 0U;
 volatile uint32_t gTsipTlsProbeSocketSendTicks = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateCalls = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme = 0U;
+volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes = 0U;
 #endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_TEST_HOOKS)
@@ -1237,6 +1257,10 @@ int mbedtls_ssl_setup( mbedtls_ssl_context *ssl,
 #if defined(MBEDTLS_SSL_DTLS_SRTP)
     memset( &ssl->dtls_srtp_info, 0, sizeof(ssl->dtls_srtp_info) );
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    ssl_tsip_update_endpoint_flag( ssl );
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
 
     if( ( ret = ssl_handshake_init( ssl ) ) != 0 )
         goto error;
@@ -3184,6 +3208,10 @@ int mbedtls_ssl_handshake_step( mbedtls_ssl_context *ssl )
         return( MBEDTLS_ERR_SSL_BAD_INPUT_DATA );
     }
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    ssl_tsip_update_endpoint_flag( ssl );
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
+
     ret = ssl_prepare_handshake_step( ssl );
     if( ret != 0 )
         return( ret );
@@ -3198,7 +3226,7 @@ int mbedtls_ssl_handshake_step( mbedtls_ssl_context *ssl )
         MBEDTLS_SSL_DEBUG_MSG( 2, ( "client state: %s",
                                     mbedtls_ssl_states_str( ssl->state ) ) );
 #if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
-        g_tsip_endpointflg = MBEDTLS_SSL_IS_CLIENT;
+        ssl_tsip_update_endpoint_flag( ssl );
 #endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
 
         switch( ssl->state )
@@ -3469,7 +3497,8 @@ void mbedtls_ssl_handshake_free( mbedtls_ssl_context *ssl )
 #endif /* MBEDTLS_SSL_ASYNC_PRIVATE */
 
 #if defined(TSIP_TLS_API_ENABLE)
-        if( ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT )
+        if( ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT &&
+            ssl->disable_tsip_tls_accel == 0U )
         {
             e_tsip_err_t tsip_ret;
             uint8_t dummy_data[32];

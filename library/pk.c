@@ -47,6 +47,7 @@
 
 #include <limits.h>
 #include <stdint.h>
+#include <string.h>
 
 #if defined(TSIP_TLS_API_ENABLE)
 #include "mbedtls/ssl.h"
@@ -66,6 +67,13 @@ tsip_ecc_public_key_index_t                     eccp256_public_key;
     MBEDTLS_INTERNAL_VALIDATE_RET( cond, MBEDTLS_ERR_PK_BAD_INPUT_DATA )
 #define PK_VALIDATE( cond )        \
     MBEDTLS_INTERNAL_VALIDATE( cond )
+
+static int pk_info_uses_pkcs11_signer( const mbedtls_pk_info_t *pk_info )
+{
+    return( ( pk_info != NULL ) &&
+            ( pk_info->name != NULL ) &&
+            ( strcmp( pk_info->name, "PKCS#11" ) == 0 ) );
+}
 
 /*
  * Initialise a mbedtls_pk_context
@@ -653,6 +661,20 @@ int mbedtls_pk_sign_restartable( mbedtls_pk_context *ctx,
     }
 #endif /* MBEDTLS_FUNC_ENABLE */
 #if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    else if( pk_info_uses_pkcs11_signer( ctx->pk_info ) != 0 )
+    {
+        int ret;
+        unsigned char saved_tsip_endpoint = g_tsip_endpointflg;
+
+        g_tsip_endpointflg = MBEDTLS_SSL_IS_SERVER;
+        ret = ctx->pk_info->sign_func( ctx->pk_ctx, md_alg,
+                                       hash, hash_len,
+                                       sig, sig_size, sig_len,
+                                       f_rng, p_rng );
+        g_tsip_endpointflg = saved_tsip_endpoint;
+
+        return( ret );
+    }
     else
 #endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
 #if defined(TSIP_TLS_API_ENABLE)

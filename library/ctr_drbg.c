@@ -594,9 +594,7 @@ int mbedtls_ctr_drbg_random( void *p_rng, unsigned char *output,
     uint32_t tsip_random[4];
     size_t output_len_cnt;
     unsigned char *p = output;
-#if defined(MBEDTLS_THREADING_C)
     mbedtls_ctr_drbg_context *ctx = (mbedtls_ctr_drbg_context *) p_rng;
-#endif /* MBEDTLS_THREADING_C */
 #else /* TSIP_TLS_API_ENABLE */
     mbedtls_ctr_drbg_context *ctx = (mbedtls_ctr_drbg_context *) p_rng;
 #endif /* TSIP_TLS_API_ENABLE */
@@ -605,6 +603,14 @@ int mbedtls_ctr_drbg_random( void *p_rng, unsigned char *output,
     if( ( ret = mbedtls_mutex_lock( &ctx->mutex ) ) != 0 )
         return( ret );
 #endif
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(MBEDTLS_FUNC_ENABLE)
+    if( MBEDTLS_SSL_IS_SERVER == g_tsip_endpointflg )
+    {
+        ret = mbedtls_ctr_drbg_random_with_add( ctx, output, output_len, NULL, 0 );
+        goto exit;
+    }
+#endif /* TSIP_TLS_API_ENABLE && MBEDTLS_FUNC_ENABLE */
 
 #if defined(TSIP_TLS_API_ENABLE)
     ret = 0;
