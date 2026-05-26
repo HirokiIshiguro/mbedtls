@@ -181,6 +181,7 @@ static void ssl_tls13_create_verify_structure( const unsigned char *transcript_h
 #if defined(TSIP_TLS_API_ENABLE)
 static int ssl_tls13_write_tsip_certificate_verify_body(
                                             mbedtls_ssl_context *ssl,
+                                            const mbedtls_pk_context *own_key,
                                             uint16_t algorithm,
                                             const unsigned char *handshake_hash,
                                             size_t handshake_hash_len,
@@ -202,6 +203,22 @@ static int ssl_tls13_write_tsip_certificate_verify_body(
         return( 0 );
     }
 
+    if( own_key != NULL )
+    {
+        const char *pk_name = mbedtls_pk_get_name( own_key );
+
+        if( ( pk_name != NULL ) &&
+            ( strcmp( pk_name, "PKCS#11" ) == 0 ) )
+        {
+            return( 0 );
+        }
+
+        if( mbedtls_pk_get_type( own_key ) == MBEDTLS_PK_OPAQUE )
+        {
+            return( 0 );
+        }
+    }
+
 #if !defined(TSIP_TLS13_CERTVERIFY_ONLY)
     if( ssl->disable_tsip_tls_accel != 0U )
     {
@@ -217,11 +234,19 @@ static int ssl_tls13_write_tsip_certificate_verify_body(
     switch( algorithm )
     {
         case MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256:
+            if( rsa2048_private_key.type != TSIP_KEY_INDEX_TYPE_RSA2048_PRIVATE )
+            {
+                return( 0 );
+            }
             tsip_scheme = TSIP_TLS13_SIGNATURE_SCHEME_RSA_PSS_RSAE_SHA256;
             tsip_private_key_index = (uint32_t *) &rsa2048_private_key;
             break;
 
         case MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256:
+            if( eccp256_private_key.type != TSIP_KEY_INDEX_TYPE_ECC_P256_PRIVATE )
+            {
+                return( 0 );
+            }
             tsip_scheme = TSIP_TLS13_SIGNATURE_SCHEME_ECDSA_SECP256R1_SHA256;
             tsip_private_key_index = (uint32_t *) &eccp256_private_key;
             break;
@@ -1197,6 +1222,7 @@ static int ssl_tls13_write_certificate_verify_body( mbedtls_ssl_context *ssl,
 
 #if defined(TSIP_TLS_API_ENABLE)
     ret = ssl_tls13_write_tsip_certificate_verify_body( ssl,
+                                                        own_key,
                                                         algorithm,
                                                         handshake_hash,
                                                         handshake_hash_len,
