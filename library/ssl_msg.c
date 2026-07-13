@@ -1883,7 +1883,11 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
             tsip_ret = R_TSIP_Aes128GcmDecryptUpdate(
                                         &tsip_gcm_handle,
                                         data,
+#if defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+                                        data,
+#else
                                         &dec_client_plain_text[0],
+#endif
                                         (uint32_t) rec->data_len,
                                         add_data,
                                         add_data_len );
@@ -1899,7 +1903,11 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
             APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmDecryptFinal called.\r\n" );
             tsip_ret = R_TSIP_Aes128GcmDecryptFinal(
                                         &tsip_gcm_handle,
+#if defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+                                        &data[gcm_len],
+#else
                                         &dec_client_plain_text[gcm_len],
+#endif
                                         &olen,
                                         data + rec->data_len,
                 (uint32_t) transform->taglen );
@@ -1910,10 +1918,15 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
                 (uint32_t)( xTaskGetTickCount() - xProbeStart );
             if( TSIP_SUCCESS != tsip_ret )
             {
+#if defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+                mbedtls_platform_zeroize( data, rec->data_len );
+#endif
                 APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmDecryptFinal ret:%d \r\n", tsip_ret );
                 return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
             }
+#if !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
             memcpy( data, &dec_client_plain_text[0],  olen );
+#endif
 
             ret = tsip_ret;
             gTsipTlsProbeAesGcmDecryptTsipRecords++;
