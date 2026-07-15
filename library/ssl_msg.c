@@ -59,9 +59,13 @@
 #if defined(TSIP_TLS_API_ENABLE)
 #include "FreeRTOS.h"
 #include "task.h"
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER) && !defined(MBEDTLS_THREADING_C)
+#error "TSIP_TLS_GCM_SHARED_RECORD_BUFFER requires MBEDTLS_THREADING_C"
+#endif
 #if defined(MBEDTLS_THREADING_C)
 #include "mbedtls/threading.h"
 extern mbedtls_threading_mutex_t mutexUseTsip;
+extern mbedtls_threading_mutex_t mutexTsipTlsGcmRecord;
 #endif /* MBEDTLS_THREADING_C */
 extern volatile uint32_t gTsipTlsProbeAesGcmEncryptTsipRecords;
 extern volatile uint32_t gTsipTlsProbeAesGcmEncryptTsipBytes;
@@ -78,6 +82,13 @@ extern volatile uint32_t gTsipTlsProbeAesGcmDecryptTicks;
 extern volatile uint32_t gTsipTlsProbeSocketSendCalls;
 extern volatile uint32_t gTsipTlsProbeSocketSendBytes;
 extern volatile uint32_t gTsipTlsProbeSocketSendTicks;
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+#define TSIP_TLS_RECORD_SCRATCH_LEN \
+    ( ( TSIP_SSL_IN_PAYLOAD_LEN > TSIP_SSL_OUT_PAYLOAD_LEN ) ? \
+      TSIP_SSL_IN_PAYLOAD_LEN : TSIP_SSL_OUT_PAYLOAD_LEN )
+static uint32_t tsip_tls_record_scratch[
+    ( TSIP_TLS_RECORD_SCRATCH_LEN + sizeof( uint32_t ) - 1U ) / sizeof( uint32_t ) ];
+#endif
 #endif /* TSIP_TLS_API_ENABLE */
 
 static uint32_t ssl_get_hs_total_len( mbedtls_ssl_context const *ssl );
@@ -570,10 +581,17 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
 #if defined(TSIP_TLS_API_ENABLE)
     mbedtls_cipher_type_t c_type;
     e_tsip_err_t tsip_ret;
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+    uint8_t * const enc_client_cipher_text = (uint8_t *) tsip_tls_record_scratch;
+#else
     uint8_t enc_client_cipher_text[TSIP_SSL_IN_PAYLOAD_LEN];
+#endif
     tsip_aes_handle_t       tsip_aes_handle;
     tsip_gcm_handle_t       tsip_gcm_handle;
     tsip_hmac_sha_handle_t  tsip_hmac_handle;
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+    int tsip_record_mutex_locked = 0;
+#endif
 #endif /* TSIP_TLS_API_ENABLE */
     /* The SSL context is only used for debugging purposes! */
 #if !defined(MBEDTLS_DEBUG_C)
@@ -581,7 +599,7 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
     ((void) ssl);
 #endif
 
-#if defined(TSIP_TLS_API_ENABLE)
+#if defined(TSIP_TLS_API_ENABLE) && !defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
     // initialize
     memset( enc_client_cipher_text, 0, sizeof( enc_client_cipher_text ) );
 #endif /* TSIP_TLS_API_ENABLE */
@@ -1056,9 +1074,23 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
             ret = 0;
             APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmEncryptInit called.\r\n" );
             TickType_t xProbeStart = xTaskGetTickCount();
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+            if( ( ret = mbedtls_mutex_lock( &mutexTsipTlsGcmRecord ) ) != 0 )
+                return( ret );
+            tsip_record_mutex_locked = 1;
+#endif
 #if defined(MBEDTLS_THREADING_C)
             if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            {
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+                if( tsip_record_mutex_locked != 0 )
+                {
+                    mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                    tsip_record_mutex_locked = 0;
+                }
+#endif
                 return( ret );
+            }
 #endif /* MBEDTLS_THREADING_C */
             tsip_ret = R_TSIP_Aes128GcmEncryptInit(
                                         &tsip_gcm_handle,
@@ -1069,6 +1101,13 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
             {
 #if defined(MBEDTLS_THREADING_C)
                 mbedtls_mutex_unlock( &mutexUseTsip );
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+                if( tsip_record_mutex_locked != 0 )
+                {
+                    mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                    tsip_record_mutex_locked = 0;
+                }
+#endif
 #endif /* MBEDTLS_THREADING_C */
                 APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmEncryptInit ret:%d \r\n", tsip_ret );
                 MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_encrypt", ret );
@@ -1090,6 +1129,13 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
             {
 #if defined(MBEDTLS_THREADING_C)
                 mbedtls_mutex_unlock( &mutexUseTsip );
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+                if( tsip_record_mutex_locked != 0 )
+                {
+                    mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                    tsip_record_mutex_locked = 0;
+                }
+#endif
 #endif /* MBEDTLS_THREADING_C */
                 APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmEncryptUpdate ret:%d \r\n", tsip_ret );
                 MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_encrypt", ret );
@@ -1109,12 +1155,26 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
                 (uint32_t)( xTaskGetTickCount() - xProbeStart );
             if( TSIP_SUCCESS != tsip_ret )
             {
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+                if( tsip_record_mutex_locked != 0 )
+                {
+                    mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                    tsip_record_mutex_locked = 0;
+                }
+#endif /* MBEDTLS_THREADING_C */
                 APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmEncryptFinal ret:%d \r\n", tsip_ret );
                 MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_encrypt", ret );
                 return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
             }
 
             memcpy( data, &enc_client_cipher_text[0], olen );
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+            if( tsip_record_mutex_locked != 0 )
+            {
+                mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                tsip_record_mutex_locked = 0;
+            }
+#endif /* MBEDTLS_THREADING_C */
             rec->data_len += transform->taglen;
             gTsipTlsProbeAesGcmEncryptTsipRecords++;
             gTsipTlsProbeAesGcmEncryptTsipBytes += (uint32_t) plain_data_len;
@@ -1603,10 +1663,18 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
     int ret = 0;
 #if defined(TSIP_TLS_API_ENABLE)
     mbedtls_cipher_type_t c_type;
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+    uint8_t * const dec_client_plain_text = (uint8_t *) tsip_tls_record_scratch;
+#else
     uint8_t dec_client_plain_text[TSIP_SSL_OUT_PAYLOAD_LEN];
+#endif
     tsip_aes_handle_t       tsip_aes_handle;
     tsip_gcm_handle_t       tsip_gcm_handle;
     tsip_hmac_sha_handle_t  tsip_hmac_handle;
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER) && \
+    !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+    int tsip_record_mutex_locked = 0;
+#endif
 #endif /* TSIP_TLS_API_ENABLE */
     int auth_done = 0;
 #if defined(MBEDTLS_SSL_SOME_SUITES_USE_MAC)
@@ -1621,7 +1689,7 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
     ((void) ssl);
 #endif
 
-#if defined(TSIP_TLS_API_ENABLE)
+#if defined(TSIP_TLS_API_ENABLE) && !defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
     // initialize
     memset( dec_client_plain_text, 0, sizeof( dec_client_plain_text ) );
 #endif /* TSIP_TLS_API_ENABLE */
@@ -1858,9 +1926,25 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
 
             APP_ALL_PRINT( 5, "R_TSIP_Aes128GcmDecryptInit called.\r\n" );
             TickType_t xProbeStart = xTaskGetTickCount();
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER) && \
+    !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+            if( ( ret = mbedtls_mutex_lock( &mutexTsipTlsGcmRecord ) ) != 0 )
+                return( ret );
+            tsip_record_mutex_locked = 1;
+#endif
 #if defined(MBEDTLS_THREADING_C)
             if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            {
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER) && \
+    !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+                if( tsip_record_mutex_locked != 0 )
+                {
+                    mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                    tsip_record_mutex_locked = 0;
+                }
+#endif
                 return( ret );
+            }
 #endif /* MBEDTLS_THREADING_C */
             tsip_ret = R_TSIP_Aes128GcmDecryptInit(
                                         &tsip_gcm_handle,
@@ -1871,6 +1955,14 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
             {
 #if defined(MBEDTLS_THREADING_C)
                 mbedtls_mutex_unlock( &mutexUseTsip );
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER) && \
+    !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+                if( tsip_record_mutex_locked != 0 )
+                {
+                    mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                    tsip_record_mutex_locked = 0;
+                }
+#endif
 #endif /* MBEDTLS_THREADING_C */
                 APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmDecryptInit ret:%d \r\n", tsip_ret );
                 return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
@@ -1895,6 +1987,14 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
             {
 #if defined(MBEDTLS_THREADING_C)
                 mbedtls_mutex_unlock( &mutexUseTsip );
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER) && \
+    !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+                if( tsip_record_mutex_locked != 0 )
+                {
+                    mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                    tsip_record_mutex_locked = 0;
+                }
+#endif
 #endif /* MBEDTLS_THREADING_C */
                 APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmDecryptUpdate ret:%d \r\n", tsip_ret );
                 return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
@@ -1921,12 +2021,28 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
 #if defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
                 mbedtls_platform_zeroize( data, rec->data_len );
 #endif
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER) && \
+    !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+                if( tsip_record_mutex_locked != 0 )
+                {
+                    mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                    tsip_record_mutex_locked = 0;
+                }
+#endif /* MBEDTLS_THREADING_C */
                 APP_ALL_PRINT( 1, "R_TSIP_Aes128GcmDecryptFinal ret:%d \r\n", tsip_ret );
                 return ( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
             }
 #if !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
             memcpy( data, &dec_client_plain_text[0],  olen );
 #endif
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER) && \
+    !defined(TSIP_TLS_GCM_DECRYPT_IN_PLACE)
+            if( tsip_record_mutex_locked != 0 )
+            {
+                mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                tsip_record_mutex_locked = 0;
+            }
+#endif /* MBEDTLS_THREADING_C */
 
             ret = tsip_ret;
             gTsipTlsProbeAesGcmDecryptTsipRecords++;
