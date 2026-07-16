@@ -1064,7 +1064,8 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
                 return( ret );
             tsip_record_mutex_locked = 1;
 #endif
-#if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
+#if defined(MBEDTLS_THREADING_C)
+            /* Serialize driver-global IDs before the driver's internal lock. */
             if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
             {
 #if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
@@ -1099,7 +1100,7 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
                 if( tsip_ret == TSIP_SUCCESS )
                     tsip_ret = tsip_final_ret;
             }
-#if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
+#if defined(MBEDTLS_THREADING_C)
             mbedtls_mutex_unlock( &mutexUseTsip );
 #endif
 
@@ -2026,7 +2027,7 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
                 return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
             }
 
-#if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
+#if defined(MBEDTLS_THREADING_C)
             if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
                 return( ret );
 #endif
@@ -2049,7 +2050,7 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
                 if( tsip_ret == TSIP_SUCCESS )
                     tsip_ret = tsip_final_ret;
             }
-#if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
+#if defined(MBEDTLS_THREADING_C)
             mbedtls_mutex_unlock( &mutexUseTsip );
 #endif
             gTsipTlsProbeAesGcmDecryptTicks +=

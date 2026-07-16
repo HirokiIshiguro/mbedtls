@@ -43,7 +43,13 @@ extern mbedtls_threading_mutex_t mutexUseTsip;
 
 static int ssl_tls13_tsip_outer_lock( void )
 {
-#if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
+    /*
+     * Keep this lock even when TSIP_MULTI_THREADING is enabled.  The public
+     * TLS 1.3 wrappers update driver-global operation IDs before entering the
+     * driver's own lock, so the complete public operation must be serialized.
+     * A multithreaded driver port must therefore use this mutex recursively.
+     */
+#if defined(MBEDTLS_THREADING_C)
     return( mbedtls_mutex_lock( &mutexUseTsip ) );
 #else
     return( 0 );
@@ -52,7 +58,7 @@ static int ssl_tls13_tsip_outer_lock( void )
 
 static void ssl_tls13_tsip_outer_unlock( void )
 {
-#if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
+#if defined(MBEDTLS_THREADING_C)
     mbedtls_mutex_unlock( &mutexUseTsip );
 #endif
 }
