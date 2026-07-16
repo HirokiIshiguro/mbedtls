@@ -594,7 +594,7 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
 #endif
 #endif /* TSIP_TLS_API_ENABLE */
     /* The SSL context is only used for debugging purposes! */
-#if !defined(MBEDTLS_DEBUG_C)
+#if !defined(MBEDTLS_DEBUG_C) && !defined(TSIP_TLS13_FULL_HANDSHAKE)
     ssl = NULL; /* make sure we don't use it except for debug */
     ((void) ssl);
 #endif
@@ -1023,6 +1023,118 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
         /*
          * Encrypt and authenticate
          */
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+        if( transform->tsip_tls13_enabled != 0U )
+        {
+            tsip_aes_key_index_t *write_key;
+            e_tsip_err_t tsip_final_ret;
+            uint32_t tls13_cipher_len = 0U;
+            uint32_t tls13_block_len =
+                    ( (uint32_t) rec->data_len / R_TSIP_AES_BLOCK_BYTE_SIZE ) *
+                    R_TSIP_AES_BLOCK_BYTE_SIZE;
+            TickType_t xProbeStart = xTaskGetTickCount();
+
+            if( ssl == NULL ||
+                ssl->conf->endpoint != MBEDTLS_SSL_IS_CLIENT ||
+                ssl->tsip_tls13_active == 0U ||
+                transform->tls_version != MBEDTLS_SSL_VERSION_TLS1_3 )
+            {
+                return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
+            }
+
+            if( transform->tsip_tls13_phase ==
+                    (uint8_t) TSIP_TLS13_PHASE_HANDSHAKE &&
+                ssl->tsip_tls13_handshake_keys_ready != 0U )
+            {
+                write_key = &ssl->tsip_tls13_client_handshake_write_key;
+            }
+            else if( transform->tsip_tls13_phase ==
+                        (uint8_t) TSIP_TLS13_PHASE_APPLICATION &&
+                     ssl->tsip_tls13_application_keys_ready != 0U )
+            {
+                write_key = &ssl->tsip_tls13_client_application_write_key;
+            }
+            else
+            {
+                return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+            if( ( ret = mbedtls_mutex_lock( &mutexTsipTlsGcmRecord ) ) != 0 )
+                return( ret );
+            tsip_record_mutex_locked = 1;
+#endif
+#if defined(MBEDTLS_THREADING_C)
+            /* Serialize driver-global IDs before the driver's internal lock. */
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+            {
+#if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+                mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                tsip_record_mutex_locked = 0;
+#endif
+                return( ret );
+            }
+#endif
+
+            tsip_ret = R_TSIP_Tls13EncryptInit(
+                            &ssl->tsip_tls13_handle,
+                            (e_tsip_tls13_phase_t) transform->tsip_tls13_phase,
+                            TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                            TSIP_TLS13_CIPHER_SUITE_AES_128_GCM_SHA256,
+                            write_key, (uint32_t) rec->data_len );
+            if( tsip_ret == TSIP_SUCCESS )
+            {
+                tsip_ret = R_TSIP_Tls13EncryptUpdate(
+                                &ssl->tsip_tls13_handle, data,
+                                enc_client_cipher_text,
+                                (uint32_t) rec->data_len );
+                /*
+                 * Final must run after a successful Init even when Update
+                 * fails.  With TSIP_MULTI_THREADING enabled, Final releases
+                 * the driver lock held across the record operation.
+                 */
+                tsip_final_ret = R_TSIP_Tls13EncryptFinal(
+                                &ssl->tsip_tls13_handle,
+                                enc_client_cipher_text + tls13_block_len,
+                                &tls13_cipher_len );
+                if( tsip_ret == TSIP_SUCCESS )
+                    tsip_ret = tsip_final_ret;
+            }
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif
+
+            gTsipTlsProbeAesGcmEncryptTicks +=
+                    (uint32_t)( xTaskGetTickCount() - xProbeStart );
+            if( tsip_ret != TSIP_SUCCESS ||
+                tls13_cipher_len !=
+                    (uint32_t)( rec->data_len + transform->taglen ) )
+            {
+                mbedtls_platform_zeroize( enc_client_cipher_text,
+                                          rec->data_len + transform->taglen );
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+                mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+                tsip_record_mutex_locked = 0;
+#endif
+                MBEDTLS_SSL_DEBUG_MSG( 1,
+                    ( "TSIP TLS 1.3 record encryption failed: %d",
+                      (int) tsip_ret ) );
+                return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            memcpy( data, enc_client_cipher_text, tls13_cipher_len );
+#if defined(MBEDTLS_THREADING_C) && defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
+            mbedtls_mutex_unlock( &mutexTsipTlsGcmRecord );
+            tsip_record_mutex_locked = 0;
+#endif
+            rec->data_len = tls13_cipher_len;
+            gTsipTlsProbeAesGcmEncryptTsipRecords++;
+            gTsipTlsProbeAesGcmEncryptTsipBytes +=
+                    (uint32_t) plain_data_len;
+        }
+        else
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
+        {
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
         status = psa_aead_encrypt( transform->psa_key_enc,
                                transform->psa_alg,
@@ -1181,6 +1293,7 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
         }
 #endif /* TSIP_TLS_API_ENABLE */
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
+        }
 
         MBEDTLS_SSL_DEBUG_BUF( 4, "after encrypt: tag",
                                data + rec->data_len - transform->taglen,
@@ -1663,6 +1776,7 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
     int ret = 0;
 #if defined(TSIP_TLS_API_ENABLE)
     mbedtls_cipher_type_t c_type;
+    e_tsip_err_t tsip_ret;
 #if defined(TSIP_TLS_GCM_SHARED_RECORD_BUFFER)
     uint8_t * const dec_client_plain_text = (uint8_t *) tsip_tls_record_scratch;
 #else
@@ -1684,7 +1798,7 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
     unsigned char add_data[13 + 1 + MBEDTLS_SSL_CID_IN_LEN_MAX ];
     size_t add_data_len;
 
-#if !defined(MBEDTLS_DEBUG_C)
+#if !defined(MBEDTLS_DEBUG_C) && !defined(TSIP_TLS13_FULL_HANDSHAKE)
     ssl = NULL; /* make sure we don't use it except for debug */
     ((void) ssl);
 #endif
@@ -1875,6 +1989,95 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
         /*
          * Decrypt and authenticate
          */
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+        if( transform->tsip_tls13_enabled != 0U )
+        {
+            tsip_aes_key_index_t *write_key;
+            e_tsip_err_t tsip_final_ret;
+            uint32_t tls13_plain_len = 0U;
+            uint32_t tls13_cipher_len =
+                    (uint32_t)( rec->data_len + transform->taglen );
+            uint32_t tls13_block_len =
+                    ( (uint32_t) rec->data_len / R_TSIP_AES_BLOCK_BYTE_SIZE ) *
+                    R_TSIP_AES_BLOCK_BYTE_SIZE;
+            TickType_t xProbeStart = xTaskGetTickCount();
+
+            if( ssl == NULL ||
+                ssl->conf->endpoint != MBEDTLS_SSL_IS_CLIENT ||
+                ssl->tsip_tls13_active == 0U ||
+                transform->tls_version != MBEDTLS_SSL_VERSION_TLS1_3 )
+            {
+                return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
+            }
+
+            if( transform->tsip_tls13_phase ==
+                    (uint8_t) TSIP_TLS13_PHASE_HANDSHAKE &&
+                ssl->tsip_tls13_handshake_keys_ready != 0U )
+            {
+                write_key = &ssl->tsip_tls13_server_handshake_write_key;
+            }
+            else if( transform->tsip_tls13_phase ==
+                        (uint8_t) TSIP_TLS13_PHASE_APPLICATION &&
+                     ssl->tsip_tls13_application_keys_ready != 0U )
+            {
+                write_key = &ssl->tsip_tls13_server_application_write_key;
+            }
+            else
+            {
+                return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+#if defined(MBEDTLS_THREADING_C)
+            if( ( ret = mbedtls_mutex_lock( &mutexUseTsip ) ) != 0 )
+                return( ret );
+#endif
+            tsip_ret = R_TSIP_Tls13DecryptInit(
+                            &ssl->tsip_tls13_handle,
+                            (e_tsip_tls13_phase_t) transform->tsip_tls13_phase,
+                            TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                            TSIP_TLS13_CIPHER_SUITE_AES_128_GCM_SHA256,
+                            write_key, tls13_cipher_len );
+            if( tsip_ret == TSIP_SUCCESS )
+            {
+                tsip_ret = R_TSIP_Tls13DecryptUpdate(
+                                &ssl->tsip_tls13_handle, data, data,
+                                tls13_cipher_len );
+                /* See the matching encrypt path: Final owns lock release. */
+                tsip_final_ret = R_TSIP_Tls13DecryptFinal(
+                                &ssl->tsip_tls13_handle,
+                                data + tls13_block_len,
+                                &tls13_plain_len );
+                if( tsip_ret == TSIP_SUCCESS )
+                    tsip_ret = tsip_final_ret;
+            }
+#if defined(MBEDTLS_THREADING_C)
+            mbedtls_mutex_unlock( &mutexUseTsip );
+#endif
+            gTsipTlsProbeAesGcmDecryptTicks +=
+                    (uint32_t)( xTaskGetTickCount() - xProbeStart );
+
+            if( tsip_ret != TSIP_SUCCESS )
+            {
+                mbedtls_platform_zeroize( data, rec->data_len );
+                if( tsip_ret == TSIP_ERR_AUTHENTICATION )
+                    return( MBEDTLS_ERR_SSL_INVALID_MAC );
+
+                MBEDTLS_SSL_DEBUG_MSG( 1,
+                    ( "TSIP TLS 1.3 record decryption failed: %d",
+                      (int) tsip_ret ) );
+                return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+            }
+
+            if( tls13_plain_len != (uint32_t) rec->data_len )
+                return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
+
+            olen = tls13_plain_len;
+            gTsipTlsProbeAesGcmDecryptTsipRecords++;
+            gTsipTlsProbeAesGcmDecryptTsipBytes += tls13_plain_len;
+        }
+        else
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
+        {
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
         status = psa_aead_decrypt( transform->psa_key_dec,
                                transform->psa_alg,
@@ -2050,6 +2253,7 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
         }
 #endif /* TSIP_TLS_API_ENABLE */
 #endif /* MBEDTLS_USE_PSA_CRYPTO */
+        }
 
         auth_done++;
 

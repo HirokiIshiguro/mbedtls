@@ -49,6 +49,25 @@ extern mbedtls_threading_mutex_t mutexUseTsip;
 #endif /* MBEDTLS_THREADING_C */
 #endif /* TSIP_TLS_API_ENABLE */
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+static int ssl_tls13_tsip_outer_lock( void )
+{
+    /* See ssl_tls13_keys.c: the public TSIP wrapper needs serialization. */
+#if defined(MBEDTLS_THREADING_C)
+    return( mbedtls_mutex_lock( &mutexUseTsip ) );
+#else
+    return( 0 );
+#endif
+}
+
+static void ssl_tls13_tsip_outer_unlock( void )
+{
+#if defined(MBEDTLS_THREADING_C)
+    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif
+}
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
+
 const uint8_t mbedtls_ssl_tls13_hello_retry_request_magic[
                 MBEDTLS_SERVER_HELLO_RANDOM_LEN ] =
                     { 0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
@@ -1320,6 +1339,21 @@ static int ssl_tls13_preprocess_finished_message( mbedtls_ssl_context *ssl )
 {
     int ret;
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->tsip_tls13_active != 0U )
+    {
+        ret = mbedtls_ssl_get_handshake_transcript(
+                    ssl, MBEDTLS_MD_SHA256,
+                    ssl->handshake->state_local.finished_in.digest,
+                    sizeof( ssl->handshake->state_local.finished_in.digest ),
+                    &ssl->handshake->state_local.finished_in.digest_len );
+        if( ret != 0 )
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_get_handshake_transcript", ret );
+
+        return( ret );
+    }
+#endif
+
     ret = mbedtls_ssl_tls13_calculate_verify_data( ssl,
                     ssl->handshake->state_local.finished_in.digest,
                     sizeof( ssl->handshake->state_local.finished_in.digest ),
@@ -1349,6 +1383,58 @@ static int ssl_tls13_parse_finished_message( mbedtls_ssl_context *ssl,
         ssl->handshake->state_local.finished_in.digest;
     size_t expected_verify_data_len =
         ssl->handshake->state_local.finished_in.digest_len;
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->tsip_tls13_active != 0U )
+    {
+        uint32_t transcript_hash[R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE /
+                                 sizeof( uint32_t )];
+        uint32_t server_finished[R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE /
+                                 sizeof( uint32_t )];
+        e_tsip_err_t tsip_ret;
+        int ret;
+
+        if( ssl->conf->endpoint != MBEDTLS_SSL_IS_CLIENT ||
+            expected_verify_data_len != R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE ||
+            (size_t)( end - buf ) != R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE )
+        {
+            MBEDTLS_SSL_PEND_FATAL_ALERT( MBEDTLS_SSL_ALERT_MSG_DECODE_ERROR,
+                                          MBEDTLS_ERR_SSL_DECODE_ERROR );
+            return( MBEDTLS_ERR_SSL_DECODE_ERROR );
+        }
+
+        memcpy( transcript_hash, expected_verify_data,
+                R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE );
+        memcpy( server_finished, buf, R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE );
+
+        if( ( ret = ssl_tls13_tsip_outer_lock() ) != 0 )
+            return( ret );
+        tsip_ret = R_TSIP_Tls13ServerHandshakeVerification(
+                    TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                    &ssl->tsip_tls13_server_finished_key_index,
+                    (uint8_t *) transcript_hash,
+                    (uint8_t *) server_finished,
+                    ssl->tsip_tls13_verify_data_index );
+        ssl_tls13_tsip_outer_unlock();
+
+        mbedtls_platform_zeroize( transcript_hash, sizeof( transcript_hash ) );
+        mbedtls_platform_zeroize( server_finished, sizeof( server_finished ) );
+
+        if( tsip_ret != TSIP_SUCCESS )
+        {
+            MBEDTLS_SSL_DEBUG_MSG( 1,
+                ( "R_TSIP_Tls13ServerHandshakeVerification failed: %d",
+                  (int) tsip_ret ) );
+            MBEDTLS_SSL_PEND_FATAL_ALERT( MBEDTLS_SSL_ALERT_MSG_DECRYPT_ERROR,
+                                          MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE );
+            return( MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE );
+        }
+
+        ssl->tsip_tls13_server_finished_verified = 1U;
+        return( 0 );
+    }
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
+
     /* Structural validation */
     if( (size_t)( end - buf ) != expected_verify_data_len )
     {
@@ -1418,6 +1504,66 @@ MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_prepare_finished_message( mbedtls_ssl_context *ssl )
 {
     int ret;
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->tsip_tls13_active != 0U )
+    {
+        uint32_t transcript_hash[R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE /
+                                 sizeof( uint32_t )];
+        uint32_t finished[R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE /
+                          sizeof( uint32_t )];
+        tsip_hmac_sha_handle_t hmac_handle;
+        e_tsip_err_t tsip_ret;
+        e_tsip_err_t tsip_final_ret;
+        size_t transcript_len = 0;
+
+        memset( &hmac_handle, 0, sizeof( hmac_handle ) );
+        ret = mbedtls_ssl_get_handshake_transcript(
+                    ssl, MBEDTLS_MD_SHA256,
+                    (unsigned char *) transcript_hash,
+                    sizeof( transcript_hash ), &transcript_len );
+        if( ret != 0 )
+            return( ret );
+        if( transcript_len != R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE )
+            return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
+
+        if( ( ret = ssl_tls13_tsip_outer_lock() ) != 0 )
+            return( ret );
+        tsip_ret = R_TSIP_Sha256HmacGenerateInit(
+                        &hmac_handle,
+                        &ssl->tsip_tls13_client_finished_key_index );
+        if( tsip_ret == TSIP_SUCCESS )
+        {
+            tsip_ret = R_TSIP_Sha256HmacGenerateUpdate(
+                            &hmac_handle, (uint8_t *) transcript_hash,
+                            R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE );
+            /* Final releases the driver-held multithreading lock. */
+            tsip_final_ret = R_TSIP_Sha256HmacGenerateFinal(
+                            &hmac_handle, (uint8_t *) finished );
+            if( tsip_ret == TSIP_SUCCESS )
+                tsip_ret = tsip_final_ret;
+        }
+        ssl_tls13_tsip_outer_unlock();
+
+        mbedtls_platform_zeroize( transcript_hash, sizeof( transcript_hash ) );
+        mbedtls_platform_zeroize( &hmac_handle, sizeof( hmac_handle ) );
+        if( tsip_ret != TSIP_SUCCESS )
+        {
+            mbedtls_platform_zeroize( finished, sizeof( finished ) );
+            MBEDTLS_SSL_DEBUG_MSG( 1,
+                ( "TSIP client Finished generation failed: %d",
+                  (int) tsip_ret ) );
+            return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+
+        memcpy( ssl->handshake->state_local.finished_out.digest,
+                finished, R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE );
+        ssl->handshake->state_local.finished_out.digest_len =
+                R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE;
+        mbedtls_platform_zeroize( finished, sizeof( finished ) );
+        return( 0 );
+    }
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
 
     /* Compute transcript of handshake up to now. */
     ret = mbedtls_ssl_tls13_calculate_verify_data( ssl,
@@ -1648,6 +1794,18 @@ int mbedtls_ssl_tls13_read_public_ecdhe_share( mbedtls_ssl_context *ssl,
     /* Check if key size is consistent with given buffer length. */
     MBEDTLS_SSL_CHK_BUF_READ_PTR( p, end, peerkey_len );
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->tsip_tls13_active != 0U )
+    {
+        if( peerkey_len != 65U || p[0] != 0x04U )
+            return( MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE );
+
+        memcpy( ssl->tsip_tls13_server_public_key, p + 1,
+                sizeof( ssl->tsip_tls13_server_public_key ) );
+        return( 0 );
+    }
+#endif
+
     /* Store peer's ECDH public key. */
     memcpy( handshake->ecdh_psa_peerkey, p, peerkey_len );
     handshake->ecdh_psa_peerkey_len = peerkey_len;
@@ -1668,6 +1826,45 @@ int mbedtls_ssl_tls13_generate_and_write_ecdh_key_exchange(
     size_t own_pubkey_len;
     mbedtls_ssl_handshake_params *handshake = ssl->handshake;
     size_t ecdh_bits = 0;
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->conf->endpoint == MBEDTLS_SSL_IS_CLIENT &&
+        named_group == MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1 )
+    {
+        e_tsip_err_t tsip_ret;
+
+        MBEDTLS_SSL_CHK_BUF_PTR( buf, end, 65U );
+        memset( &ssl->tsip_tls13_handle, 0,
+                sizeof( ssl->tsip_tls13_handle ) );
+        memset( &ssl->tsip_tls13_p256_key_index, 0,
+                sizeof( ssl->tsip_tls13_p256_key_index ) );
+        memset( ssl->tsip_tls13_client_public_key, 0,
+                sizeof( ssl->tsip_tls13_client_public_key ) );
+
+        if( ( ret = ssl_tls13_tsip_outer_lock() ) != 0 )
+            return( ret );
+        tsip_ret = R_TSIP_GenerateTls13P256EccKeyIndex(
+                    &ssl->tsip_tls13_handle,
+                    TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                    &ssl->tsip_tls13_p256_key_index,
+                    (uint8_t *) ssl->tsip_tls13_client_public_key );
+        ssl_tls13_tsip_outer_unlock();
+        if( tsip_ret != TSIP_SUCCESS )
+        {
+            MBEDTLS_SSL_DEBUG_MSG( 1,
+                ( "R_TSIP_GenerateTls13P256EccKeyIndex failed: %d",
+                  (int) tsip_ret ) );
+            return( MBEDTLS_ERR_SSL_HW_ACCEL_FAILED );
+        }
+
+        buf[0] = 0x04U;
+        memcpy( buf + 1, ssl->tsip_tls13_client_public_key,
+                sizeof( ssl->tsip_tls13_client_public_key ) );
+        *out_len = 65U;
+        ssl->tsip_tls13_active = 1U;
+        return( 0 );
+    }
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
 
     MBEDTLS_SSL_DEBUG_MSG( 1, ( "Perform PSA-based ECDH computation." ) );
 
