@@ -35,6 +35,58 @@
 
 #include "psa/crypto.h"
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif
+
+static int ssl_tls13_tsip_outer_lock( void )
+{
+#if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
+    return( mbedtls_mutex_lock( &mutexUseTsip ) );
+#else
+    return( 0 );
+#endif
+}
+
+static void ssl_tls13_tsip_outer_unlock( void )
+{
+#if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
+    mbedtls_mutex_unlock( &mutexUseTsip );
+#endif
+}
+
+static int ssl_tls13_tsip_get_transcript_sha256(
+                                        mbedtls_ssl_context *ssl,
+                                        uint32_t digest[
+                                            R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE /
+                                            sizeof( uint32_t )] )
+{
+    size_t digest_len = 0;
+    int ret;
+
+    ret = mbedtls_ssl_get_handshake_transcript(
+                ssl, MBEDTLS_MD_SHA256, (unsigned char *) digest,
+                R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE, &digest_len );
+    if( ret != 0 )
+        return( ret );
+
+    if( digest_len != R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE )
+        return( MBEDTLS_ERR_SSL_INTERNAL_ERROR );
+
+    return( 0 );
+}
+
+static void ssl_tls13_tsip_prepare_transform_keys(
+                                        mbedtls_ssl_key_set *traffic_keys )
+{
+    memset( traffic_keys, 0, sizeof( *traffic_keys ) );
+    traffic_keys->key_len = 16U;
+    traffic_keys->iv_len = 12U;
+}
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
+
 #define MBEDTLS_SSL_TLS1_3_LABEL( name, string )       \
     .name = string,
 
@@ -1434,22 +1486,104 @@ int mbedtls_ssl_tls13_compute_handshake_transform( mbedtls_ssl_context *ssl )
     mbedtls_ssl_transform *transform_handshake = NULL;
     mbedtls_ssl_handshake_params *handshake = ssl->handshake;
 
-    /* Compute handshake secret */
-    ret = mbedtls_ssl_tls13_key_schedule_stage_handshake( ssl );
-    if( ret != 0 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->tsip_tls13_active != 0U )
     {
-        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_tls13_derive_master_secret", ret );
-        goto cleanup;
-    }
+        uint32_t transcript_hash[R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE /
+                                 sizeof( uint32_t )];
+        e_tsip_err_t tsip_ret;
 
-    /* Next evolution in key schedule: Establish handshake secret and
-     * key material. */
-    ret = mbedtls_ssl_tls13_generate_handshake_keys( ssl, &traffic_keys );
-    if( ret != 0 )
+        if( ssl->conf->endpoint != MBEDTLS_SSL_IS_CLIENT ||
+            ssl->session_negotiate->ciphersuite !=
+                MBEDTLS_TLS1_3_AES_128_GCM_SHA256 ||
+            handshake->offered_group_id !=
+                MBEDTLS_SSL_IANA_TLS_GROUP_SECP256R1 ||
+            !mbedtls_ssl_tls13_ephemeral_enabled( ssl ) )
+        {
+            ret = MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE;
+            goto cleanup;
+        }
+
+        if( ( ret = ssl_tls13_tsip_outer_lock() ) != 0 )
+            goto cleanup;
+        tsip_ret = R_TSIP_Tls13GenerateEcdheSharedSecret(
+                    TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                    (uint8_t *) ssl->tsip_tls13_server_public_key,
+                    &ssl->tsip_tls13_p256_key_index,
+                    &ssl->tsip_tls13_shared_secret_key_index );
+        if( tsip_ret == TSIP_SUCCESS )
+        {
+            tsip_ret = R_TSIP_Tls13GenerateHandshakeSecret(
+                    &ssl->tsip_tls13_shared_secret_key_index,
+                    &ssl->tsip_tls13_handshake_secret_key_index );
+        }
+        ssl_tls13_tsip_outer_unlock();
+        if( tsip_ret != TSIP_SUCCESS )
+        {
+            MBEDTLS_SSL_DEBUG_MSG( 1,
+                ( "TSIP handshake secret generation failed: %d",
+                  (int) tsip_ret ) );
+            ret = MBEDTLS_ERR_SSL_HW_ACCEL_FAILED;
+            goto cleanup;
+        }
+
+        ret = ssl_tls13_tsip_get_transcript_sha256( ssl, transcript_hash );
+        if( ret != 0 )
+            goto cleanup;
+
+        if( ( ret = ssl_tls13_tsip_outer_lock() ) != 0 )
+            goto cleanup;
+        tsip_ret = R_TSIP_Tls13GenerateServerHandshakeTrafficKey(
+                    &ssl->tsip_tls13_handle,
+                    TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                    &ssl->tsip_tls13_handshake_secret_key_index,
+                    (uint8_t *) transcript_hash,
+                    &ssl->tsip_tls13_server_handshake_write_key,
+                    &ssl->tsip_tls13_server_finished_key_index );
+        if( tsip_ret == TSIP_SUCCESS )
+        {
+            tsip_ret = R_TSIP_Tls13GenerateClientHandshakeTrafficKey(
+                    &ssl->tsip_tls13_handle,
+                    TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                    &ssl->tsip_tls13_handshake_secret_key_index,
+                    (uint8_t *) transcript_hash,
+                    &ssl->tsip_tls13_client_handshake_write_key,
+                    &ssl->tsip_tls13_client_finished_key_index );
+        }
+        ssl_tls13_tsip_outer_unlock();
+        mbedtls_platform_zeroize( transcript_hash, sizeof( transcript_hash ) );
+        if( tsip_ret != TSIP_SUCCESS )
+        {
+            MBEDTLS_SSL_DEBUG_MSG( 1,
+                ( "TSIP handshake traffic key generation failed: %d",
+                  (int) tsip_ret ) );
+            ret = MBEDTLS_ERR_SSL_HW_ACCEL_FAILED;
+            goto cleanup;
+        }
+
+        ssl->tsip_tls13_handshake_keys_ready = 1U;
+        ssl_tls13_tsip_prepare_transform_keys( &traffic_keys );
+    }
+    else
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
     {
-        MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_tls13_generate_handshake_keys",
-                               ret );
-        goto cleanup;
+        /* Compute handshake secret */
+        ret = mbedtls_ssl_tls13_key_schedule_stage_handshake( ssl );
+        if( ret != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_tls13_derive_master_secret", ret );
+            goto cleanup;
+        }
+
+        /* Next evolution in key schedule: Establish handshake secret and
+         * key material. */
+        ret = mbedtls_ssl_tls13_generate_handshake_keys( ssl, &traffic_keys );
+        if( ret != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_tls13_generate_handshake_keys",
+                                   ret );
+            goto cleanup;
+        }
     }
 
     transform_handshake = mbedtls_calloc( 1, sizeof( mbedtls_ssl_transform ) );
@@ -1470,6 +1604,14 @@ int mbedtls_ssl_tls13_compute_handshake_transform( mbedtls_ssl_context *ssl )
         MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_tls13_populate_transform", ret );
         goto cleanup;
     }
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->tsip_tls13_active != 0U )
+    {
+        transform_handshake->tsip_tls13_enabled = 1U;
+        transform_handshake->tsip_tls13_phase =
+                (uint8_t) TSIP_TLS13_PHASE_HANDSHAKE;
+    }
+#endif
     handshake->transform_handshake = transform_handshake;
 
 cleanup:
@@ -1495,20 +1637,75 @@ int mbedtls_ssl_tls13_compute_application_transform( mbedtls_ssl_context *ssl )
     mbedtls_ssl_key_set traffic_keys;
     mbedtls_ssl_transform *transform_application = NULL;
 
-    ret = mbedtls_ssl_tls13_key_schedule_stage_application( ssl );
-    if( ret != 0 )
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->tsip_tls13_active != 0U )
     {
-        MBEDTLS_SSL_DEBUG_RET( 1,
-           "mbedtls_ssl_tls13_key_schedule_stage_application", ret );
-        goto cleanup;
-    }
+        uint32_t transcript_hash[R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE /
+                                 sizeof( uint32_t )];
+        e_tsip_err_t tsip_ret;
 
-    ret = mbedtls_ssl_tls13_generate_application_keys( ssl, &traffic_keys );
-    if( ret != 0 )
+        if( ssl->tsip_tls13_server_finished_verified == 0U )
+        {
+            ret = MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE;
+            goto cleanup;
+        }
+
+        ret = ssl_tls13_tsip_get_transcript_sha256( ssl, transcript_hash );
+        if( ret != 0 )
+            goto cleanup;
+
+        if( ( ret = ssl_tls13_tsip_outer_lock() ) != 0 )
+            goto cleanup;
+        tsip_ret = R_TSIP_Tls13GenerateMasterSecret(
+                    &ssl->tsip_tls13_handle,
+                    TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                    &ssl->tsip_tls13_handshake_secret_key_index,
+                    ssl->tsip_tls13_verify_data_index,
+                    &ssl->tsip_tls13_master_secret_key_index );
+        if( tsip_ret == TSIP_SUCCESS )
+        {
+            tsip_ret = R_TSIP_Tls13GenerateApplicationTrafficKey(
+                    &ssl->tsip_tls13_handle,
+                    TSIP_TLS13_MODE_FULL_HANDSHAKE,
+                    &ssl->tsip_tls13_master_secret_key_index,
+                    (uint8_t *) transcript_hash,
+                    &ssl->tsip_tls13_server_app_secret_key_index,
+                    &ssl->tsip_tls13_client_app_secret_key_index,
+                    &ssl->tsip_tls13_server_application_write_key,
+                    &ssl->tsip_tls13_client_application_write_key );
+        }
+        ssl_tls13_tsip_outer_unlock();
+        mbedtls_platform_zeroize( transcript_hash, sizeof( transcript_hash ) );
+        if( tsip_ret != TSIP_SUCCESS )
+        {
+            MBEDTLS_SSL_DEBUG_MSG( 1,
+                ( "TSIP application traffic key generation failed: %d",
+                  (int) tsip_ret ) );
+            ret = MBEDTLS_ERR_SSL_HW_ACCEL_FAILED;
+            goto cleanup;
+        }
+
+        ssl->tsip_tls13_application_keys_ready = 1U;
+        ssl_tls13_tsip_prepare_transform_keys( &traffic_keys );
+    }
+    else
+#endif /* TSIP_TLS_API_ENABLE && TSIP_TLS13_FULL_HANDSHAKE */
     {
-        MBEDTLS_SSL_DEBUG_RET( 1,
-            "mbedtls_ssl_tls13_generate_application_keys", ret );
-        goto cleanup;
+        ret = mbedtls_ssl_tls13_key_schedule_stage_application( ssl );
+        if( ret != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1,
+               "mbedtls_ssl_tls13_key_schedule_stage_application", ret );
+            goto cleanup;
+        }
+
+        ret = mbedtls_ssl_tls13_generate_application_keys( ssl, &traffic_keys );
+        if( ret != 0 )
+        {
+            MBEDTLS_SSL_DEBUG_RET( 1,
+                "mbedtls_ssl_tls13_generate_application_keys", ret );
+            goto cleanup;
+        }
     }
 
     transform_application =
@@ -1530,6 +1727,15 @@ int mbedtls_ssl_tls13_compute_application_transform( mbedtls_ssl_context *ssl )
         MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_tls13_populate_transform", ret );
         goto cleanup;
     }
+
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    if( ssl->tsip_tls13_active != 0U )
+    {
+        transform_application->tsip_tls13_enabled = 1U;
+        transform_application->tsip_tls13_phase =
+                (uint8_t) TSIP_TLS13_PHASE_APPLICATION;
+    }
+#endif
 
     ssl->transform_application = transform_application;
 
