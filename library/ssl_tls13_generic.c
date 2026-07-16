@@ -1513,6 +1513,7 @@ static int ssl_tls13_prepare_finished_message( mbedtls_ssl_context *ssl )
                           sizeof( uint32_t )];
         tsip_hmac_sha_handle_t hmac_handle;
         e_tsip_err_t tsip_ret;
+        e_tsip_err_t tsip_final_ret;
         size_t transcript_len = 0;
 
         memset( &hmac_handle, 0, sizeof( hmac_handle ) );
@@ -1535,11 +1536,11 @@ static int ssl_tls13_prepare_finished_message( mbedtls_ssl_context *ssl )
             tsip_ret = R_TSIP_Sha256HmacGenerateUpdate(
                             &hmac_handle, (uint8_t *) transcript_hash,
                             R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE );
-        }
-        if( tsip_ret == TSIP_SUCCESS )
-        {
-            tsip_ret = R_TSIP_Sha256HmacGenerateFinal(
+            /* Final releases the driver-held multithreading lock. */
+            tsip_final_ret = R_TSIP_Sha256HmacGenerateFinal(
                             &hmac_handle, (uint8_t *) finished );
+            if( tsip_ret == TSIP_SUCCESS )
+                tsip_ret = tsip_final_ret;
         }
         ssl_tls13_tsip_outer_unlock();
 

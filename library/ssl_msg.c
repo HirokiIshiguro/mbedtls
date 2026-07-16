@@ -1027,6 +1027,7 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
         if( transform->tsip_tls13_enabled != 0U )
         {
             tsip_aes_key_index_t *write_key;
+            e_tsip_err_t tsip_final_ret;
             uint32_t tls13_cipher_len = 0U;
             uint32_t tls13_block_len =
                     ( (uint32_t) rec->data_len / R_TSIP_AES_BLOCK_BYTE_SIZE ) *
@@ -1086,13 +1087,17 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
                                 &ssl->tsip_tls13_handle, data,
                                 enc_client_cipher_text,
                                 (uint32_t) rec->data_len );
-            }
-            if( tsip_ret == TSIP_SUCCESS )
-            {
-                tsip_ret = R_TSIP_Tls13EncryptFinal(
+                /*
+                 * Final must run after a successful Init even when Update
+                 * fails.  With TSIP_MULTI_THREADING enabled, Final releases
+                 * the driver lock held across the record operation.
+                 */
+                tsip_final_ret = R_TSIP_Tls13EncryptFinal(
                                 &ssl->tsip_tls13_handle,
                                 enc_client_cipher_text + tls13_block_len,
                                 &tls13_cipher_len );
+                if( tsip_ret == TSIP_SUCCESS )
+                    tsip_ret = tsip_final_ret;
             }
 #if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
             mbedtls_mutex_unlock( &mutexUseTsip );
@@ -1987,6 +1992,7 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
         if( transform->tsip_tls13_enabled != 0U )
         {
             tsip_aes_key_index_t *write_key;
+            e_tsip_err_t tsip_final_ret;
             uint32_t tls13_plain_len = 0U;
             uint32_t tls13_cipher_len =
                     (uint32_t)( rec->data_len + transform->taglen );
@@ -2035,13 +2041,13 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
                 tsip_ret = R_TSIP_Tls13DecryptUpdate(
                                 &ssl->tsip_tls13_handle, data, data,
                                 tls13_cipher_len );
-            }
-            if( tsip_ret == TSIP_SUCCESS )
-            {
-                tsip_ret = R_TSIP_Tls13DecryptFinal(
+                /* See the matching encrypt path: Final owns lock release. */
+                tsip_final_ret = R_TSIP_Tls13DecryptFinal(
                                 &ssl->tsip_tls13_handle,
                                 data + tls13_block_len,
                                 &tls13_plain_len );
+                if( tsip_ret == TSIP_SUCCESS )
+                    tsip_ret = tsip_final_ret;
             }
 #if defined(MBEDTLS_THREADING_C) && TSIP_MULTI_THREADING == 0
             mbedtls_mutex_unlock( &mutexUseTsip );
