@@ -25,6 +25,8 @@ define `RENESAS_TSIP_FLEET_TLS13_ENABLE=1`: only contexts explicitly marked with
 `mbedtls_ssl_set_user_data_n(ssl, 1)` use the TSIP claim signer. The previous
 `RX671_TSIP_FLEET_TLS13_ENABLE` flag remains a compatibility input. Other contexts
 retain the upstream signer. TSIP errors propagate instead of falling back.
+Enabling either Fleet flag without `TSIP_TLS13_CERTVERIFY_ENABLE` is a compile-time
+configuration error, rather than an implicit switch to the software signer.
 
 Without the TSIP feature flag, the upstream software path remains selected.
 The initial change ports the existing CertificateVerify hook; it does not

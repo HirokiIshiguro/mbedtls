@@ -28,10 +28,19 @@ software_tls13_compile:
     - |
       python3 - <<'PY'
       from pathlib import Path
+      import re
+      import subprocess
       macros = Path('build-tsip-compat/macros.txt').read_text()
       undefined = Path('build-tsip-compat/undefined.txt').read_text()
-      assert '#define MBEDTLS_SSL_PROTO_TLS1_3 ' in macros, 'TLS 1.3 source was not enabled'
-      assert '#define TSIP_TLS13_CERTVERIFY_ENABLE ' not in macros
+      assert re.search(r'^#define MBEDTLS_SSL_PROTO_TLS1_3\b', macros, re.M), 'TLS 1.3 source was not enabled'
+      assert not re.search(r'^#define TSIP_TLS13_CERTVERIFY_ENABLE\b', macros, re.M)
       assert not any(name in undefined for name in ('R_TSIP_', 'mutexUseTsip', 'gTsipTlsProbe'))
       print('Upstream software TLS 1.3 source compiles without TSIP integration symbols.')
+      for flag in ('RENESAS_TSIP_FLEET_TLS13_ENABLE', 'RX671_TSIP_FLEET_TLS13_ENABLE'):
+          command = ['gcc', '-std=c99', '-Wall', '-Wextra', '-Werror', '-Iinclude', '-Ilibrary', '-fsyntax-only', 'library/ssl_tls13_generic.c']
+          disabled = subprocess.run(command + [f'-D{flag}=0'], capture_output=True, text=True)
+          assert disabled.returncode == 0, disabled.stderr
+          invalid = subprocess.run(command + [f'-D{flag}=1'], capture_output=True, text=True)
+          assert invalid.returncode != 0 and 'Fleet TSIP flag requires TSIP_TLS13_CERTVERIFY_ENABLE' in invalid.stderr, invalid.stderr
+      print('Both Fleet aliases reject a missing TSIP feature flag and accept disabled Fleet.')
       PY

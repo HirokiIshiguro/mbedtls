@@ -26,6 +26,14 @@
 
 #include "psa/crypto.h"
 #include "psa_util_internal.h"
+#if ((defined(RENESAS_TSIP_FLEET_TLS13_ENABLE) && \
+      (RENESAS_TSIP_FLEET_TLS13_ENABLE != 0)) || \
+     (defined(RX671_TSIP_FLEET_TLS13_ENABLE) && \
+      (RX671_TSIP_FLEET_TLS13_ENABLE != 0))) && \
+    !defined(TSIP_TLS13_CERTVERIFY_ENABLE)
+#error "Fleet TSIP flag requires TSIP_TLS13_CERTVERIFY_ENABLE"
+#endif
+
 #if defined(TSIP_TLS13_CERTVERIFY_ENABLE)
 #include <stdint.h>
 #include <platform.h>
@@ -255,7 +263,9 @@ static int ssl_tls13_write_tsip_certificate_verify_body(mbedtls_ssl_context *ssl
     uint32_t *tsip_private_key_index = NULL;
     uint32_t tsip_certificate_verify_len = 0;
     const mbedtls_x509_crt *own_cert = mbedtls_ssl_own_cert(ssl);
+#if defined(MBEDTLS_THREADING_C)
     int ret = 0;
+#endif
 
     *handled = 0;
 
