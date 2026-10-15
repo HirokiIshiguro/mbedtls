@@ -5,6 +5,33 @@ Mbed TLS is a C library that implements cryptographic primitives, X.509 certific
 
 Mbed TLS includes a reference implementation of the [PSA Cryptography API](#psa-cryptography-api). This is currently a preview for evaluation purposes only.
 
+Renesas TSIP branch
+-------------------
+
+This branch starts at upstream Mbed TLS 3.6.4 (`c765c831e5c2a0971410692f92f7a81d6ec65ec2`).
+Its purpose is to keep the Renesas RX TSIP TLS 1.3 CertificateVerify integration
+in this fork, consumed through a fixed Git submodule, instead of copying and
+rewriting upstream source in application repositories. TLS 1.2 continues to use
+the separate `renesas-tsip/v3.2.1` branch.
+
+Define `TSIP_TLS13_CERTVERIFY_ENABLE` only in TSIP-enabled client configurations.
+The consumer supplies the TSIP driver, provisioned RSA-2048/ECC-P256 key indexes,
+`mutexUseTsip` when threading is enabled, and the `gTsipTlsProbeTls13CertificateVerify*`
+counters declared in `library/ssl_tls13_generic.c`. These are integration symbols;
+private key material does not belong in this repository.
+
+For Fleet flows with both a TSIP claim key and a software PKCS11 device key,
+define `RENESAS_TSIP_FLEET_TLS13_ENABLE=1`: only contexts explicitly marked with
+`mbedtls_ssl_set_user_data_n(ssl, 1)` use the TSIP claim signer. The previous
+`RX671_TSIP_FLEET_TLS13_ENABLE` flag remains a compatibility input. Other contexts
+retain the upstream signer. TSIP errors propagate instead of falling back.
+
+Without the TSIP feature flag, the upstream software path remains selected.
+The initial change ports the existing CertificateVerify hook; it does not
+establish preservation of every older TLS 1.3 record/key-schedule offload or
+0-RTT behavior. Target compilation, hardware regression, and performance
+measurement must be completed for each consumer before qualification.
+
 Configuration
 -------------
 

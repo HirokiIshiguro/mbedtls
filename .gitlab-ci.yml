@@ -1,0 +1,37 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+
+variables:
+  GIT_SUBMODULE_STRATEGY: none
+
+stages:
+  - test
+
+software_tls13_compile:
+  stage: test
+  timeout: 10 minutes
+  tags:
+    - exec-shell
+    - os-linux
+    - hw-sakura-vps
+    - cap-internet
+  script:
+    - gcc --version
+    - mkdir -p build-tsip-compat
+    - gcc -std=c99 -Wall -Wextra -Werror -Iinclude -Ilibrary -c library/ssl_tls13_generic.c -o build-tsip-compat/ssl_tls13_generic.o
+    - gcc -dM -E -Iinclude -Ilibrary library/ssl_tls13_generic.c > build-tsip-compat/macros.txt
+    - nm -u build-tsip-compat/ssl_tls13_generic.o > build-tsip-compat/undefined.txt
+    - |
+      python3 - <<'PY'
+      from pathlib import Path
+      macros = Path('build-tsip-compat/macros.txt').read_text()
+      undefined = Path('build-tsip-compat/undefined.txt').read_text()
+      assert '#define MBEDTLS_SSL_PROTO_TLS1_3 ' in macros, 'TLS 1.3 source was not enabled'
+      assert '#define TSIP_TLS13_CERTVERIFY_ENABLE ' not in macros
+      assert not any(name in undefined for name in ('R_TSIP_', 'mutexUseTsip', 'gTsipTlsProbe'))
+      print('Upstream software TLS 1.3 source compiles without TSIP integration symbols.')
+      PY
