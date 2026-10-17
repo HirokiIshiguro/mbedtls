@@ -26,6 +26,36 @@
 
 #include "psa/crypto.h"
 #include "psa_util_internal.h"
+#if ((defined(RENESAS_TSIP_FLEET_TLS13_ENABLE) && \
+      (RENESAS_TSIP_FLEET_TLS13_ENABLE != 0)) || \
+     (defined(RX671_TSIP_FLEET_TLS13_ENABLE) && \
+      (RX671_TSIP_FLEET_TLS13_ENABLE != 0))) && \
+    !defined(TSIP_TLS13_CERTVERIFY_ENABLE)
+#error "Fleet TSIP flag requires TSIP_TLS13_CERTVERIFY_ENABLE"
+#endif
+
+#if defined(TSIP_TLS13_CERTVERIFY_ENABLE)
+#include <stdint.h>
+#include <platform.h>
+#include "r_tsip_rx_if.h"
+#if defined(MBEDTLS_THREADING_C)
+#include "mbedtls/threading.h"
+extern mbedtls_threading_mutex_t mutexUseTsip;
+#endif /* MBEDTLS_THREADING_C */
+extern tsip_rsa2048_private_key_index_t rsa2048_private_key;
+extern tsip_ecc_private_key_index_t eccp256_private_key;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateAttempts;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateCalls;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateFailures;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme;
+extern volatile uint32_t gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes;
+#define SSL_TLS13_TSIP_CERT_VERIFY_MAX_SIZE (4 + 256)
+#define SSL_TLS13_TSIP_CERT_VERIFY_SKIP_HASH_LEN       (0x54534831U)
+#define SSL_TLS13_TSIP_CERT_VERIFY_SKIP_OWN_CERT       (0x54534f43U)
+#define SSL_TLS13_TSIP_CERT_VERIFY_SKIP_UNSUPPORTED    (0x54535553U)
+#define SSL_TLS13_TSIP_CERT_VERIFY_SKIP_CERT_KEY       (0x5453434bU)
+#endif /* TSIP_TLS13_CERTVERIFY_ENABLE */
 
 /* Define a local translating function to save code size by not using too many
  * arguments in each translating place. */
@@ -218,6 +248,128 @@ static void ssl_tls13_create_verify_structure(const unsigned char *transcript_ha
     *verify_buffer_len = idx;
 }
 
+#if defined(TSIP_TLS13_CERTVERIFY_ENABLE)
+static int ssl_tls13_write_tsip_certificate_verify_body(mbedtls_ssl_context *ssl,
+                                                        uint16_t algorithm,
+                                                        const unsigned char *handshake_hash,
+                                                        size_t handshake_hash_len,
+                                                        unsigned char *buf,
+                                                        unsigned char *end,
+                                                        size_t *out_len,
+                                                        int *handled)
+{
+    e_tsip_err_t tsip_ret;
+    e_tsip_tls13_signature_scheme_type_t tsip_scheme;
+    uint32_t *tsip_private_key_index = NULL;
+    uint32_t tsip_certificate_verify_len = 0;
+    const mbedtls_x509_crt *own_cert = mbedtls_ssl_own_cert(ssl);
+#if defined(MBEDTLS_THREADING_C)
+    int ret = 0;
+#endif
+
+    *handled = 0;
+
+    if (ssl->conf->endpoint != MBEDTLS_SSL_IS_CLIENT) {
+        return 0;
+    }
+
+#if (defined(RENESAS_TSIP_FLEET_TLS13_ENABLE) && \
+     (RENESAS_TSIP_FLEET_TLS13_ENABLE != 0)) || \
+    (defined(RX671_TSIP_FLEET_TLS13_ENABLE) && \
+     (RX671_TSIP_FLEET_TLS13_ENABLE != 0))
+    /*
+     * Fleet uses two different private-key providers. The transport marks only
+     * the claim SSL context for TSIP CertificateVerify; the provisioned EC key
+     * must continue through the normal software PKCS #11 signer.
+     */
+    if (mbedtls_ssl_get_user_data_n(ssl) != 1U) {
+        return 0;
+    }
+#endif
+
+    gTsipTlsProbeTls13CertificateVerifyGenerateAttempts++;
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme = (uint32_t) algorithm;
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = 0U;
+
+    if (handshake_hash_len != R_TSIP_SHA256_HASH_LENGTH_BYTE_SIZE) {
+        gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = SSL_TLS13_TSIP_CERT_VERIFY_SKIP_HASH_LEN;
+        return 0;
+    }
+
+    if (own_cert == NULL) {
+        gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = SSL_TLS13_TSIP_CERT_VERIFY_SKIP_OWN_CERT;
+        return 0;
+    }
+
+    switch (algorithm) {
+        case MBEDTLS_TLS1_3_SIG_RSA_PSS_RSAE_SHA256:
+            if (!mbedtls_pk_can_do(&own_cert->pk, MBEDTLS_PK_RSA)) {
+                gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = SSL_TLS13_TSIP_CERT_VERIFY_SKIP_CERT_KEY;
+                return 0;
+            }
+            tsip_scheme = TSIP_TLS13_SIGNATURE_SCHEME_RSA_PSS_RSAE_SHA256;
+            tsip_private_key_index = (uint32_t *) &rsa2048_private_key;
+            break;
+
+        case MBEDTLS_TLS1_3_SIG_ECDSA_SECP256R1_SHA256:
+            if (!mbedtls_pk_can_do(&own_cert->pk, MBEDTLS_PK_ECDSA)) {
+                gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = SSL_TLS13_TSIP_CERT_VERIFY_SKIP_CERT_KEY;
+                return 0;
+            }
+            tsip_scheme = TSIP_TLS13_SIGNATURE_SCHEME_ECDSA_SECP256R1_SHA256;
+            tsip_private_key_index = (uint32_t *) &eccp256_private_key;
+            break;
+
+        default:
+            gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = SSL_TLS13_TSIP_CERT_VERIFY_SKIP_UNSUPPORTED;
+            return 0;
+    }
+
+    MBEDTLS_SSL_CHK_BUF_PTR(buf, end, SSL_TLS13_TSIP_CERT_VERIFY_MAX_SIZE);
+
+#if defined(MBEDTLS_THREADING_C)
+    if ((ret = mbedtls_mutex_lock(&mutexUseTsip)) != 0) {
+        return ret;
+    }
+#endif /* MBEDTLS_THREADING_C */
+
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastScheme = (uint32_t) tsip_scheme;
+
+    tsip_ret = R_TSIP_Tls13CertificateVerifyGenerate(
+        tsip_private_key_index,
+        tsip_scheme,
+        (uint8_t *) handshake_hash,
+        buf,
+        &tsip_certificate_verify_len);
+
+#if defined(MBEDTLS_THREADING_C)
+    mbedtls_mutex_unlock(&mutexUseTsip);
+#endif /* MBEDTLS_THREADING_C */
+
+    if (TSIP_SUCCESS != tsip_ret) {
+        gTsipTlsProbeTls13CertificateVerifyGenerateFailures++;
+        gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = (uint32_t) tsip_ret;
+        MBEDTLS_SSL_DEBUG_MSG(1,
+                              ("R_TSIP_Tls13CertificateVerifyGenerate failed: %d",
+                               (int) tsip_ret));
+        return MBEDTLS_ERR_SSL_HW_ACCEL_FAILED;
+    }
+
+    if (tsip_certificate_verify_len > SSL_TLS13_TSIP_CERT_VERIFY_MAX_SIZE) {
+        gTsipTlsProbeTls13CertificateVerifyGenerateFailures++;
+        gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = (uint32_t) MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL;
+        return MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL;
+    }
+
+    gTsipTlsProbeTls13CertificateVerifyGenerateCalls++;
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastStatus = (uint32_t) TSIP_SUCCESS;
+    gTsipTlsProbeTls13CertificateVerifyGenerateLastBytes = tsip_certificate_verify_len;
+
+    *out_len = (size_t) tsip_certificate_verify_len;
+    *handled = 1;
+    return 0;
+}
+#endif /* TSIP_TLS13_CERTVERIFY_ENABLE */
 MBEDTLS_CHECK_RETURN_CRITICAL
 static int ssl_tls13_parse_certificate_verify(mbedtls_ssl_context *ssl,
                                               const unsigned char *buf,
@@ -954,15 +1106,35 @@ static int ssl_tls13_write_certificate_verify_body(mbedtls_ssl_context *ssl,
         psa_algorithm_t psa_algorithm = PSA_ALG_NONE;
         unsigned char verify_hash[PSA_HASH_MAX_SIZE];
         size_t verify_hash_len;
-
+#if defined(TSIP_TLS13_CERTVERIFY_ENABLE)
+        int tsip_cert_verify_handled = 0;
+        size_t tsip_cert_verify_len = 0;
+#endif /* TSIP_TLS13_CERTVERIFY_ENABLE */
         if (!mbedtls_ssl_sig_alg_is_offered(ssl, *sig_alg)) {
             continue;
         }
 
+#if defined(TSIP_TLS13_CERTVERIFY_ENABLE)
+        ret = ssl_tls13_write_tsip_certificate_verify_body(ssl,
+                                                           *sig_alg,
+                                                           handshake_hash,
+                                                           handshake_hash_len,
+                                                           p,
+                                                           end,
+                                                           &tsip_cert_verify_len,
+                                                           &tsip_cert_verify_handled);
+        if (ret != 0) {
+            return ret;
+        }
+        if (tsip_cert_verify_handled != 0) {
+            *out_len = tsip_cert_verify_len;
+            return 0;
+        }
+#endif /* TSIP_TLS13_CERTVERIFY_ENABLE */
+
         if (!mbedtls_ssl_tls13_sig_alg_for_cert_verify_is_supported(*sig_alg)) {
             continue;
         }
-
         if (!mbedtls_ssl_tls13_check_sig_alg_cert_key_match(*sig_alg, own_key)) {
             continue;
         }
