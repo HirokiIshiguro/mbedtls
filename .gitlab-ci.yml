@@ -17,7 +17,6 @@ software_tls13_compile:
   tags:
     - exec-shell
     - os-linux
-    - hw-sakura-vps
     - cap-internet
   script:
     - gcc --version
