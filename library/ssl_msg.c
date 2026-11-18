@@ -576,7 +576,7 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
     tsip_hmac_sha_handle_t  tsip_hmac_handle;
 #endif /* TSIP_TLS_API_ENABLE */
     /* The SSL context is only used for debugging purposes! */
-#if !defined(MBEDTLS_DEBUG_C)
+#if !defined(MBEDTLS_DEBUG_C) && !defined(TSIP_TLS_API_ENABLE)
     ssl = NULL; /* make sure we don't use it except for debug */
     ((void) ssl);
 #endif
@@ -1616,7 +1616,7 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context *ssl,
     unsigned char add_data[13 + 1 + MBEDTLS_SSL_CID_IN_LEN_MAX ];
     size_t add_data_len;
 
-#if !defined(MBEDTLS_DEBUG_C)
+#if !defined(MBEDTLS_DEBUG_C) && !defined(TSIP_TLS_API_ENABLE)
     ssl = NULL; /* make sure we don't use it except for debug */
     ((void) ssl);
 #endif

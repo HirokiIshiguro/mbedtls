@@ -5665,6 +5665,7 @@ static int ssl_compute_master( mbedtls_ssl_handshake_params *handshake,
 #endif /* TSIP_TLS_API_ENABLE */
 
 #if !defined(MBEDTLS_DEBUG_C) &&                    \
+    !defined(TSIP_TLS_API_ENABLE) &&                \
     !defined(MBEDTLS_SSL_EXTENDED_MASTER_SECRET) && \
     !(defined(MBEDTLS_USE_PSA_CRYPTO) &&            \
       defined(MBEDTLS_KEY_EXCHANGE_PSK_ENABLED))
@@ -7781,6 +7782,7 @@ static int ssl_tls12_populate_transform( mbedtls_ssl_transform *transform,
 #endif
 
 #if !defined(MBEDTLS_DEBUG_C) && \
+    !defined(TSIP_TLS_API_ENABLE) && \
     !defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     if( ssl->f_export_keys == NULL )
     {
