@@ -1009,6 +1009,11 @@ struct mbedtls_ssl_transform
 
     mbedtls_ssl_protocol_version tls_version;
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    uint8_t tsip_tls13_enabled;       /*!< TSIP owns the TLS 1.3 keys. */
+    uint8_t tsip_tls13_phase;         /*!< e_tsip_tls13_phase_t value. */
+#endif
+
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
     mbedtls_svc_key_id_t psa_key_enc;           /*!<  psa encryption key      */
     mbedtls_svc_key_id_t psa_key_dec;           /*!<  psa decryption key      */

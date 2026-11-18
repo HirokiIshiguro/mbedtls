@@ -1391,6 +1391,46 @@ int mbedtls_ssl_session_reset_int( mbedtls_ssl_context *ssl, int partial )
 
     ssl->state = MBEDTLS_SSL_HELLO_REQUEST;
 
+#if defined(TSIP_TLS_API_ENABLE) && defined(TSIP_TLS13_FULL_HANDSHAKE)
+    /* Discard all TSIP session handles, protected keys and sequence numbers. */
+    ssl->tsip_tls13_active = 0U;
+    ssl->tsip_tls13_server_finished_verified = 0U;
+    ssl->tsip_tls13_handshake_keys_ready = 0U;
+    ssl->tsip_tls13_application_keys_ready = 0U;
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_handle,
+                              sizeof( ssl->tsip_tls13_handle ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_p256_key_index,
+                              sizeof( ssl->tsip_tls13_p256_key_index ) );
+    mbedtls_platform_zeroize( ssl->tsip_tls13_client_public_key,
+                              sizeof( ssl->tsip_tls13_client_public_key ) );
+    mbedtls_platform_zeroize( ssl->tsip_tls13_server_public_key,
+                              sizeof( ssl->tsip_tls13_server_public_key ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_shared_secret_key_index,
+                              sizeof( ssl->tsip_tls13_shared_secret_key_index ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_handshake_secret_key_index,
+                              sizeof( ssl->tsip_tls13_handshake_secret_key_index ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_server_finished_key_index,
+                              sizeof( ssl->tsip_tls13_server_finished_key_index ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_client_finished_key_index,
+                              sizeof( ssl->tsip_tls13_client_finished_key_index ) );
+    mbedtls_platform_zeroize( ssl->tsip_tls13_verify_data_index,
+                              sizeof( ssl->tsip_tls13_verify_data_index ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_master_secret_key_index,
+                              sizeof( ssl->tsip_tls13_master_secret_key_index ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_server_app_secret_key_index,
+                              sizeof( ssl->tsip_tls13_server_app_secret_key_index ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_client_app_secret_key_index,
+                              sizeof( ssl->tsip_tls13_client_app_secret_key_index ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_server_handshake_write_key,
+                              sizeof( ssl->tsip_tls13_server_handshake_write_key ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_client_handshake_write_key,
+                              sizeof( ssl->tsip_tls13_client_handshake_write_key ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_server_application_write_key,
+                              sizeof( ssl->tsip_tls13_server_application_write_key ) );
+    mbedtls_platform_zeroize( &ssl->tsip_tls13_client_application_write_key,
+                              sizeof( ssl->tsip_tls13_client_application_write_key ) );
+#endif
+
     mbedtls_ssl_session_reset_msg_layer( ssl, partial );
 
     /* Reset renegotiation state */

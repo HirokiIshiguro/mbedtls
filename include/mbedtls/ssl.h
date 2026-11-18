@@ -1752,6 +1752,42 @@ struct mbedtls_ssl_context
     tsip_hmac_sha_key_index_t       tsip_servermackey;
     tsip_aes_key_index_t            tsip_clientcommonkey;
     tsip_aes_key_index_t            tsip_servercommonkey;
+
+#if defined(TSIP_TLS13_FULL_HANDSHAKE)
+    /*
+     * TLS 1.3 client state whose secrets remain inside TSIP.  This first
+     * integration intentionally supports only a full P-256 handshake with
+     * TLS_AES_128_GCM_SHA256.  A selected TSIP key share is fail-closed: the
+     * connection must not fall back to software traffic keys afterwards.
+     */
+    uint8_t                         tsip_tls13_active;
+    uint8_t                         tsip_tls13_server_finished_verified;
+    uint8_t                         tsip_tls13_handshake_keys_ready;
+    uint8_t                         tsip_tls13_application_keys_ready;
+    tsip_tls13_handle_t             tsip_tls13_handle;
+    tsip_tls_p256_ecc_key_index_t   tsip_tls13_p256_key_index;
+    uint32_t                        tsip_tls13_client_public_key[16];
+    uint32_t                        tsip_tls13_server_public_key[16];
+    tsip_tls13_ephemeral_shared_secret_key_index_t
+                                    tsip_tls13_shared_secret_key_index;
+    tsip_tls13_ephemeral_handshake_secret_key_index_t
+                                    tsip_tls13_handshake_secret_key_index;
+    tsip_tls13_ephemeral_server_finished_key_index_t
+                                    tsip_tls13_server_finished_key_index;
+    tsip_hmac_sha_key_index_t       tsip_tls13_client_finished_key_index;
+    uint32_t                        tsip_tls13_verify_data_index[
+                                        R_TSIP_TLS13_FINISHED_KEY_WORD_SIZE ];
+    tsip_tls13_ephemeral_master_secret_key_index_t
+                                    tsip_tls13_master_secret_key_index;
+    tsip_tls13_ephemeral_app_secret_key_index_t
+                                    tsip_tls13_server_app_secret_key_index;
+    tsip_tls13_ephemeral_app_secret_key_index_t
+                                    tsip_tls13_client_app_secret_key_index;
+    tsip_aes_key_index_t            tsip_tls13_server_handshake_write_key;
+    tsip_aes_key_index_t            tsip_tls13_client_handshake_write_key;
+    tsip_aes_key_index_t            tsip_tls13_server_application_write_key;
+    tsip_aes_key_index_t            tsip_tls13_client_application_write_key;
+#endif /* TSIP_TLS13_FULL_HANDSHAKE */
 #endif /* TSIP_TLS_API_ENABLE */
 
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
